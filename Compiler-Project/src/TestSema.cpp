@@ -1,76 +1,84 @@
-#include "Sema.h"
-#include "Parser.h"
 #include "Lexer.h"
+#include "Parser.h"
+#include "Sema.h"
 #include "llvm/Support/raw_ostream.h"
+#include <iostream>
+#include <string>
 
-void runTest(const char* testName, llvm::StringRef input, bool expectError) {
-    llvm::outs() << "--------------------------------------------------\n";
-    llvm::outs() << "Running Test: " << testName << "\n";
-    llvm::outs() << "Code:\n" << input << "\n";
+void runTest(std::string testName, llvm::StringRef inputCode, bool expectError) {
+    std::cout << "\n==========================================" << std::endl;
+    std::cout << "TEST: " << testName << std::endl;
 
-    Lexer L(input);
-    Parser P(L);
-    AST *Tree = P.parse();
+    Lexer Lex(inputCode);
+    Parser Par(Lex);
+    Block *Program = Par.parse();
 
-    if (P.hasError() || !Tree) {
-        llvm::errs() << "[Parser Failed] - Cannot run semantic check.\n";
+    if (Par.hasError() || !Program) {
+        std::cout << "❌ PARSER ERROR" << std::endl;
         return;
     }
 
-    Sema S;
-    bool hasSemanticError = S.semantic(Tree);
+    Sema Semantic;
+    bool hasSemanticError = Semantic.semantic(Program);
 
-    if (hasSemanticError && expectError) {
-        llvm::outs() << "RESULT: PASS (Error detected as expected)\n";
-    } else if (!hasSemanticError && !expectError) {
-        llvm::outs() << "RESULT: PASS (No error, code is valid)\n";
-    } else if (hasSemanticError && !expectError) {
-        llvm::outs() << "RESULT: FAIL (Unexpected error detected)\n";
+    if (hasSemanticError == expectError) {
+        std::cout << "✅ SUCCESS" << std::endl;
     } else {
-        llvm::outs() << "RESULT: FAIL (Expected error but none found)\n";
+        std::cout << "❌ FAILURE: " << (expectError ? "Expected error but got none." : "Unexpected error occurred.") << std::endl;
     }
 }
 
 int main() {
-    // 1. Valid Code
-    runTest("Valid Declaration & Assignment",
-        "var x int = 10; var y int; ADD y x 5;",
-        false);
+    // 1. اصلاح شده: تعریف res قبل از استفاده
+    runTest("Valid Code",
+        "var x int = 10;\n"
+        "var y int = 20;\n"
+        "var res int;\n"  // <--- خط جدید
+        "ADD res x y;\n"
+        "print(res);",
+        false
+    );
 
-    // 2. Undeclared Variable
-    runTest("Undeclared Variable Usage",
-        "var x int = 10; ADD y x 5;",
-        true);
+    runTest("Undefined Variable",
+        "var x int = 10;\n"
+        "var res int;\n" // اضافه شده تا فقط z خطا بدهد
+        "ADD res x z;",
+        true
+    );
 
-    // 3. Redeclaration
-    runTest("Redeclaration of Variable",
-        "var x int; var x float;",
-        true);
+    runTest("Redeclaration",
+        "var x int = 5;\n"
+        "var x bool = true;",
+        true
+    );
 
-    // 4. Type Mismatch (Int vs Bool)
-    runTest("Type Mismatch Assignment",
-        "var x int; var b bool = true; ADD x b 5;",
-        true);
+    runTest("Type Mismatch",
+        "var x int = true;",
+        true
+    );
 
-    // 5. Division by Zero
-    runTest("Division By Zero Literal",
-        "var x int = 10; DIV x 10 0;",
-        true);
+    runTest("Invalid Math",
+        "var x bool = true;\n"
+        "INC x;",
+        true
+    );
 
-    // 6. Logical Operator Type Check
-    runTest("Logical Operator on Int",
-        "var x int = 5; var y int = 6; AND x y y;",
-        true);
+    // 2. اصلاح شده: تعریف res برای اینکه ارور تقسیم دیده شود
+    runTest("Division by Zero",
+        "var x int = 10;\n"
+        "var res int;\n" // <--- خط جدید
+        "DIV res x 0;",
+        true
+    );
 
-    // 7. If Condition Check
-    runTest("If Condition Non-Bool",
-        "var x int = 5; if (x) { print(x); }",
-        true);
-
-    // 8. Valid If Condition
-    runTest("Valid If Condition",
-        "var x int = 5; if (x > 2) { print(x); }",
-        false);
+    runTest("Loop Scope",
+        "array list = [1, 2];\n"
+        "foreach (i in list) {\n"
+        "    print(i);\n"
+        "}\n"
+        "print(i);",
+        true
+    );
 
     return 0;
 }

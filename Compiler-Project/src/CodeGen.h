@@ -14,10 +14,15 @@ class CodeGen : public ASTVisitor
     llvm::Module *M;
     llvm::IRBuilder<> Builder;
 
-    std::map<std::string, llvm::Value *> NamedValues;
+    // جدول نمادها برای نگهداری آدرس متغیرها در حافظه
+    std::map<std::string, llvm::AllocaInst *> NamedValues;
     llvm::Value *V;
 
     llvm::AllocaInst *CreateEntryBlockAlloca(llvm::Function *TheFunction, llvm::StringRef VarName, llvm::Type *Type);
+
+    // توابع کمکی برای چاپ و توابع داخلی
+    void setupPrintf();
+    llvm::FunctionCallee PrintfFunc;
 
 public:
     CodeGen();
@@ -35,6 +40,12 @@ public:
     virtual void visit(PrintStmt &Node) override;
     virtual void visit(ArrayLiteral &Node) override;
     virtual void visit(BuiltinCall &Node) override;
+
+    // --- متدهای جدید ---
+    virtual void visit(MatchStmt &Node) override;
+    virtual void visit(CompoundStmt &Node) override;
+    virtual void visit(UnaryStmt &Node) override;
+    virtual void visit(RangeExpr &Node) override;
 };
 
 #endif

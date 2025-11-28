@@ -7,7 +7,7 @@
 
 class Sema {
 public:
-    bool semantic(AST *Tree);
+  bool semantic(AST *Tree);
 };
 
 #endif

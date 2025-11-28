@@ -17,22 +17,23 @@ public:
         unknown,        // Error
 
         // Identifiers & Literals
-        ident,          // variable names
-        number,         // integer literals (e.g. 123)
-        float_literal,  // float literals (e.g. 3.14) - Optional if needed later
+        ident,          // variable names (and _)
+        number,         // integer literals
+        string_literal, // "text"
 
         // Delimiters
         comma,          // ,
         semicolon,      // ;
         colon,          // :
+        underscore,     // _
         l_paren,        // (
         r_paren,        // )
-        l_brace,        // {  (Replaces begin)
-        r_brace,        // }  (Replaces end)
-        l_square,       // [  (For arrays)
-        r_square,       // ]  (For arrays)
+        l_brace,        // {
+        r_brace,        // }
+        l_square,       // [
+        r_square,       // ]
 
-        // Standard Operators (Used in expressions like print(2*5))
+        // Operators
         assign,         // =
         plus,           // +
         minus,          // -
@@ -40,72 +41,43 @@ public:
         slash,          // /
         mod,            // %
 
-        // Comparison Operators
-        eq,             // ==
-        neq,            // !=
-        gt,             // >
-        lt,             // <
-        gte,            // >=
-        lte,            // <=
+        // Comparison
+        eq, neq, gt, lt, gte, lte,
 
-        // Logical Operators (For conditions: &&, ||)
-        land,           // &&
-        lor,            // ||
+        // Logical
+        land, lor, not_op,
 
-        // --- NEW KEYWORDS (Phase 1 Requirements) ---
+        // Keywords
+        KW_var, KW_int, KW_float, KW_bool, KW_array, KW_string,
+        KW_true, KW_false,
 
-        // Data Types & Declarations
-        KW_var,         // var
-        KW_int,         // int
-        KW_float,       // float
-        KW_bool,        // bool
-        KW_array,       // array
-        KW_true,        // true
-        KW_false,       // false
+        KW_ADD, KW_SUB, KW_MUL, KW_DIV, KW_MOD,
+        KW_INC, KW_DEC, KW_PLE, KW_MIE,
+        KW_AND, KW_OR,
 
-        // Arithmetic Statements (Prefix style)
-        KW_ADD,         // ADD
-        KW_SUB,         // SUB
-        KW_MUL,         // MUL
-        KW_DIV,         // DIV
-        KW_MOD,         // MOD
-        KW_INC,         // INC
-        KW_DEC,         // DEC
-        KW_PLE,         // PLE
-        KW_MIE,         // MIE
+        KW_if, KW_elif, KW_else,
+        KW_for, KW_foreach, KW_in,
+        KW_match,       // match keyword
 
-        // Bitwise/Logical Statements (Prefix style)
-        KW_AND,         // AND
-        KW_OR,          // OR
+        KW_print, KW_length, KW_index, KW_max, KW_abs, KW_find,
 
-        // Control Flow
-        KW_if,          // if
-        KW_elif,        // elif
-        KW_else,        // else
-        KW_for,         // for
-        KW_foreach,     // foreach
-        KW_in,          // in
-        KW_match,       // match
-
-        // Built-in Functions
-        KW_print,       // print
-        KW_to_int,      // to_int
-        KW_to_float,    // to_float
-        KW_to_bool,     // to_bool
-        KW_abs,         // abs
-        KW_length,      // length
-        KW_max,         // max
-        KW_index,       // index
-        KW_find         // find
+        KW_to_int, KW_to_float, KW_to_bool
     };
 
 private:
     TokenKind Kind;
     llvm::StringRef Text;
+    int Line; // ذخیره شماره خط برای مدیریت خطا
+    int Col;  // ذخیره شماره ستون
 
 public:
     TokenKind getKind() const { return Kind; }
     llvm::StringRef getText() const { return Text; }
+
+    // --- توابع جدید برای دریافت مکان خطا ---
+    int getLine() const { return Line; }
+    int getCol() const { return Col; }
+    // -------------------------------------
 
     bool is(TokenKind K) const { return Kind == K; }
     bool isOneOf(TokenKind K1, TokenKind K2) const { return is(K1) || is(K2); }
@@ -117,12 +89,14 @@ class Lexer
 {
     const char *BufferStart;
     const char *BufferPtr;
+    int CurrentLine = 1; // شمارنده خط جاری
 
 public:
     Lexer(const llvm::StringRef &Buffer)
     {
         BufferStart = Buffer.begin();
         BufferPtr = BufferStart;
+        CurrentLine = 1; // شروع از خط یک
     }
 
     void next(Token &token);
