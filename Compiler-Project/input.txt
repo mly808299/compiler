@@ -1,0 +1,6 @@
+var sum int = 0;
+match sum{
+   0 -> print("zero"),
+   1 -> print("one"),
+   _ -> print("other")
+}
