@@ -7,7 +7,8 @@
 
 class Sema {
 public:
-  bool semantic(AST *Tree);
+  // تغییر: اضافه کردن پارامتر InputCode
+  bool semantic(AST *Tree, llvm::StringRef InputCode);
 };
 
 #endif

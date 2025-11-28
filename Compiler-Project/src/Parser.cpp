@@ -28,26 +28,26 @@ AST *Parser::parseStatement() {
         case Token::KW_if: return parseIf();
         case Token::KW_for:
         case Token::KW_foreach: return parseLoop();
-        case Token::KW_match: return parseMatch(); // <--- اضافه شد
+        case Token::KW_match: return parseMatch();
         case Token::KW_print: return parsePrint();
         case Token::l_brace: return parseBlock();
 
-        // Math commands (ADD, SUB, PLE, INC...)
         case Token::KW_ADD: case Token::KW_SUB: case Token::KW_MUL: case Token::KW_DIV:
         case Token::KW_MOD: case Token::KW_INC: case Token::KW_DEC: case Token::KW_PLE:
         case Token::KW_MIE: case Token::KW_AND: case Token::KW_OR:
             return parseMathCommand();
 
         default:
-            // اگر دستور با یک شناسه شروع شد (مثلاً تابع صدا زده شد)، فعلاً ارور
-            // اما در زبان شما دستورات با کلمات کلیدی شروع می‌شوند.
             error(); return nullptr;
     }
 }
 
 Declaration *Parser::parseDeclaration() {
+    advance(); // رد کردن 'var'
+
+    // --- تغییر مهم: مکان را اینجا (روی نام متغیر) ذخیره کن ---
     int L = Tok.getLine(), C = Tok.getCol();
-    advance(); // consume 'var'
+
     if (expect(Token::ident)) return nullptr;
     llvm::StringRef Name = Tok.getText();
     advance();
@@ -68,38 +68,40 @@ Declaration *Parser::parseDeclaration() {
 }
 
 Declaration *Parser::parseArrayDeclaration() {
+    advance(); // رد کردن 'array'
+
+    // --- تغییر مهم: مکان روی نام آرایه ---
     int L = Tok.getLine(), C = Tok.getCol();
-    advance(); // consume 'array'
+
     if (expect(Token::ident)) return nullptr;
     llvm::StringRef Name = Tok.getText();
     advance();
 
     Expr *Init = nullptr;
-    if (consume(Token::assign)) Init = parseExpr(); // می‌تواند ArrayLiteral یا RangeExpr باشد
+    if (consume(Token::assign)) Init = parseExpr();
 
-    if (consume(Token::semicolon)) {} // Optional semicolon for flexibility
+    if (consume(Token::semicolon)) {}
 
     return new Declaration(L, C, Name, "array", Init);
 }
 
-// پارس کردن دستورات ریاضی جدید: ADD x y z
 AST *Parser::parseMathCommand() {
-    int L = Tok.getLine(), C = Tok.getCol();
     Token::TokenKind OpKind = Tok.getKind();
-    advance(); // consume operator (ADD, INC...)
+    advance(); // رد کردن عملگر (ADD, ...)
+
+    // --- تغییر مهم: مکان روی متغیر هدف ---
+    int L = Tok.getLine(), C = Tok.getCol();
 
     if (expect(Token::ident)) return nullptr;
     llvm::StringRef Target = Tok.getText();
     advance();
 
-    // Unary: INC x, DEC x
     if (OpKind == Token::KW_INC || OpKind == Token::KW_DEC) {
         consume(Token::semicolon);
         UnaryStmt::OpType Op = (OpKind == Token::KW_INC) ? UnaryStmt::INC : UnaryStmt::DEC;
         return new UnaryStmt(L, C, Target, Op);
     }
 
-    // Compound: PLE x 5 (x += 5)
     if (OpKind == Token::KW_PLE || OpKind == Token::KW_MIE) {
         Expr *Val = parseExpr();
         consume(Token::semicolon);
@@ -107,7 +109,6 @@ AST *Parser::parseMathCommand() {
         return new CompoundStmt(L, C, Target, Val, Op);
     }
 
-    // Binary: ADD x y z (x = y + z)
     Expr *Op1 = parseExpr();
     Expr *Op2 = parseExpr();
     consume(Token::semicolon);
@@ -123,13 +124,12 @@ AST *Parser::parseMathCommand() {
         case Token::KW_OR:  BinOp = BinaryOp::Or; break;
         default: BinOp = BinaryOp::Plus;
     }
-    // ساختار انتساب: Target = Op1 (BinOp) Op2
     return new Assignment(L, C, Target, new BinaryOp(L, C, BinOp, Op1, Op2));
 }
 
 IfStmt *Parser::parseIf() {
-    int L = Tok.getLine(), C = Tok.getCol();
-    advance(); // if
+    int L = Tok.getLine(), C = Tok.getCol(); // برای if مکان فعلی خوب است
+    advance();
     if (consume(Token::l_paren)) {}
     Expr *Cond = parseExpr();
     if (consume(Token::r_paren)) {}
@@ -152,45 +152,34 @@ IfStmt *Parser::parseIf() {
     return new IfStmt(L, C, Cond, Then, Elifs, Else);
 }
 
-// Match: match x { 1 -> print("One"), _ -> print("Def") }
-// Match: match x { 1 -> print("One"), _ -> print("Def") }
 MatchStmt *Parser::parseMatch() {
     int L = Tok.getLine(), C = Tok.getCol();
-    advance(); // رد کردن کلمه match
-    Expr *Target = parseExpr(); // متغیری که باید بررسی شود (مثلاً x)
+    advance();
+    Expr *Target = parseExpr();
 
     if (!consume(Token::l_brace)) { error(); return nullptr; }
 
     llvm::SmallVector<std::pair<Expr*, AST*>, 8> Cases;
-
-    // تا زمانی که به } یا پایان فایل نرسیدیم، کیس‌ها را بخوان
     while (!Tok.is(Token::r_brace) && !Tok.is(Token::eoi)) {
         Expr *Pattern = nullptr;
-
-        // حالت اول: پترن پیش‌فرض (_)
         if (Tok.is(Token::underscore)) {
             Pattern = new Final(Tok.getLine(), Tok.getCol(), Final::Underscore, "_");
             advance();
-        }
-        // حالت دوم: عدد، رشته یا شناسه (تغییر مهم: استفاده از parseFinal)
-        else {
+        } else {
             Pattern = parseFinal();
         }
 
-        // بررسی وجود فلش -> (که از دو توکن - و > تشکیل شده)
         if (!consume(Token::minus) || !consume(Token::gt)) {
             llvm::errs() << "Parser Error: Expected '->' at line " << Tok.getLine() << "\n";
             HasError = true;
             return nullptr;
         }
 
-        // دستور سمت راست (Body)
         AST *Body = parseStatement();
         Cases.push_back({Pattern, Body});
 
-        consume(Token::comma); // ویرگول بین کیس‌ها (اختیاری)
+        consume(Token::comma);
     }
-
     consume(Token::r_brace);
     return new MatchStmt(L, C, Target, Cases);
 }
@@ -199,20 +188,20 @@ AST *Parser::parseLoop() {
     int L = Tok.getLine(), C = Tok.getCol();
     if (Tok.getKind() == Token::KW_for) {
         advance(); consume(Token::l_paren);
-        AST *Init = parseStatement(); // var i int = 0;
+        AST *Init = parseStatement();
         Expr *Cond = parseExpr();
         consume(Token::semicolon);
-        AST *Step = parseStatement(); // INC i;
+        AST *Step = parseStatement();
         consume(Token::r_paren);
         Block *Body = parseBlock();
         return new ForStmt(L, C, Init, Cond, Step, Body);
-    } else { // foreach
+    } else {
         advance(); consume(Token::l_paren);
         if (expect(Token::ident)) return nullptr;
         llvm::StringRef Iter = Tok.getText(); advance();
 
         if (expect(Token::KW_in)) return nullptr;
-        advance(); // in
+        advance();
 
         if (expect(Token::ident)) return nullptr;
         llvm::StringRef Col = Tok.getText(); advance();
@@ -233,10 +222,8 @@ PrintStmt *Parser::parsePrint() {
 
 Expr *Parser::parseExpr() {
     Expr *Left = parseTerm();
-    while (Tok.isOneOf(Token::plus, Token::minus,
-                       Token::eq, Token::neq, Token::lt, Token::gt, Token::lte, Token::gte,
-                       Token::land, Token::lor)) {
-        int L = Tok.getLine(), C = Tok.getCol();
+    while (Tok.isOneOf(Token::plus, Token::minus, Token::eq, Token::neq, Token::lt, Token::gt, Token::lte, Token::gte, Token::land, Token::lor)) {
+        int L = Tok.getLine(), C = Tok.getCol(); // مکان عملگر
         BinaryOp::Operator Op;
         if (Tok.is(Token::plus)) Op = BinaryOp::Plus;
         else if (Tok.is(Token::minus)) Op = BinaryOp::Minus;
@@ -276,29 +263,20 @@ Expr *Parser::parseFactor() {
 }
 
 Expr *Parser::parseFinal() {
-    int L = Tok.getLine(), C = Tok.getCol();
+    int L = Tok.getLine(), C = Tok.getCol(); // مکان دقیق عدد یا متغیر
 
     if (consume(Token::l_paren)) {
         Expr *E = parseExpr();
         consume(Token::r_paren);
         return E;
     }
-
-    // در تابع parseFinal:
-
     if (Tok.getKind() == Token::number) {
         llvm::StringRef Val = Tok.getText();
         advance();
-
-        // --- تغییر جدید: اگر نقطه داشت، نوعش Float است ---
-        if (Val.find('.') != llvm::StringRef::npos) {
-            return new Final(L, C, Final::Float, Val);
-        }
-        // -----------------------------------------------
-
+        if (Val.find('.') != llvm::StringRef::npos)
+             return new Final(L, C, Final::Float, Val);
         return new Final(L, C, Final::Number, Val);
     }
-
     if (Tok.getKind() == Token::ident) {
         llvm::StringRef Val = Tok.getText(); advance();
         return new Final(L, C, Final::Ident, Val);
@@ -312,54 +290,37 @@ Expr *Parser::parseFinal() {
         return new Final(L, C, Final::Bool, Val);
     }
 
-    // Array Literal: [1, 2, 3] OR Comprehension: [x * 2 for x in list]
     if (consume(Token::l_square)) {
         Expr *FirstExpr = parseExpr();
-
-        // اگر بعد از اولین عبارت، کلمه for آمد، یعنی Comprehension است
         if (consume(Token::KW_for)) {
-            // [Expr for Iter in List if Cond]
             if (expect(Token::ident)) return nullptr;
             llvm::StringRef IterName = Tok.getText(); advance();
-
             if (expect(Token::KW_in)) return nullptr;
             advance();
-
             if (expect(Token::ident)) return nullptr;
             llvm::StringRef ListName = Tok.getText(); advance();
-
             Expr *Cond = nullptr;
-            if (consume(Token::KW_if)) {
-                Cond = parseExpr();
-            }
+            if (consume(Token::KW_if)) { Cond = parseExpr(); }
             consume(Token::r_square);
             return new RangeExpr(L, C, FirstExpr, IterName, ListName, Cond);
         }
         else {
-            // آرایه معمولی: [1, 2, 3]
             llvm::SmallVector<Expr*, 8> Values;
             Values.push_back(FirstExpr);
-            while (consume(Token::comma)) {
-                Values.push_back(parseExpr());
-            }
+            while (consume(Token::comma)) { Values.push_back(parseExpr()); }
             if (!consume(Token::r_square)) { error(); return nullptr; }
             return new ArrayLiteral(L, C, Values);
         }
     }
 
-    // Builtin functions
-    if (Tok.isOneOf(Token::KW_length, Token::KW_index, Token::KW_max,
-                    Token::KW_abs, Token::KW_find, Token::KW_to_int,
-                    Token::KW_to_float, Token::KW_to_bool)) {
+    if (Tok.isOneOf(Token::KW_length, Token::KW_index, Token::KW_max, Token::KW_abs, Token::KW_find, Token::KW_to_int, Token::KW_to_float, Token::KW_to_bool)) {
         std::string FuncName = Tok.getText().str();
         advance();
         consume(Token::l_paren);
         llvm::SmallVector<Expr*, 4> Args;
         if (!Tok.is(Token::r_paren)) {
             Args.push_back(parseExpr());
-            while (consume(Token::comma)) {
-                Args.push_back(parseExpr());
-            }
+            while (consume(Token::comma)) { Args.push_back(parseExpr()); }
         }
         consume(Token::r_paren);
         return new BuiltinCall(L, C, FuncName, Args);

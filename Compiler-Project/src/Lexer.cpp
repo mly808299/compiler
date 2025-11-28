@@ -10,75 +10,78 @@ namespace charinfo
         return c >= '0' && c <= '9';
     }
     LLVM_READNONE inline bool isLetter(char c) {
-        // تغییر مهم: حذف '_' از اینجا تا متغیر با آن شروع نشود
         return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
     }
 }
 
+// تابع جادویی برای پیدا کردن شماره ستون
+int Lexer::calculateColumn(const char *TokenStart) {
+    const char *LineStart = TokenStart;
+    // به عقب برمی‌گردیم تا به کاراکتر خط جدید (\n) یا شروع فایل برسیم
+    while (LineStart > BufferStart && *(LineStart - 1) != '\n' && *(LineStart - 1) != '\r') {
+        --LineStart;
+    }
+    // فاصله توکن تا شروع خط + 1 می‌شود شماره ستون
+    return (TokenStart - LineStart) + 1;
+}
+
 void Lexer::next(Token &token)
 {
-    // 1. Skip Whitespace & Count Lines (مدیریت خطوط جدید)
     while (*BufferPtr && charinfo::isWhitespace(*BufferPtr)) {
         if (*BufferPtr == '\n') {
-            CurrentLine++; // افزایش شمارنده خط
+            CurrentLine++;
         }
         ++BufferPtr;
     }
 
-    // 2. Check End of Input
     if (!*BufferPtr) {
         token.Kind = Token::eoi;
         return;
     }
 
-    // 3. Handle Multi-line Comments /* ... */
+    // ذخیره مکان شروع توکن قبل از اینکه BufferPtr جلو برود
+    const char *TokenStart = BufferPtr;
+
+    // Handle Multi-line Comments
     if (*BufferPtr == '/' && *(BufferPtr + 1) == '*') {
         BufferPtr += 2;
         while (*BufferPtr && !(*BufferPtr == '*' && *(BufferPtr + 1) == '/')) {
-            // نکته مهم: اگر داخل کامنت چندخطی Enter زده شده بود، خط را بشمار
-            if (*BufferPtr == '\n') {
-                CurrentLine++;
-            }
+            if (*BufferPtr == '\n') CurrentLine++;
             ++BufferPtr;
         }
         if (*BufferPtr) BufferPtr += 2;
-        next(token); // برو سراغ توکن بعدی
-        return;
-    }
-
-    // 3.5 Handle Single Line Comments // ...
-    if (*BufferPtr == '/' && *(BufferPtr + 1) == '/') {
-        BufferPtr += 2;
-        // تا وقتی به خط جدید (\n) یا پایان فایل نرسیدیم، جلو برو
-        while (*BufferPtr && *BufferPtr != '\n' && *BufferPtr != '\r') {
-            ++BufferPtr;
-        }
-        // اینجا نیازی به ++CurrentLine نیست چون در دور بعدی حلقه اصلی (Skip Whitespace) شمرده می‌شود
         next(token);
         return;
     }
 
-    // 4. String Literals "..."
+    // Handle Single Line Comments
+    if (*BufferPtr == '/' && *(BufferPtr + 1) == '/') {
+        BufferPtr += 2;
+        while (*BufferPtr && *BufferPtr != '\n' && *BufferPtr != '\r') {
+            ++BufferPtr;
+        }
+        next(token);
+        return;
+    }
+
     if (*BufferPtr == '"') {
         const char *end = BufferPtr + 1;
         while (*end && *end != '"') ++end;
         if (*end == '"') ++end;
+        // بازنشانی بافر پوینتر موقت برای formToken
+        BufferPtr = TokenStart;
         formToken(token, end, Token::string_literal);
         return;
     }
 
-    // 5. Identifiers & Keywords
     if (charinfo::isLetter(*BufferPtr)) {
         const char *end = BufferPtr + 1;
-
-        // اجازه دادن به '_' در وسط یا آخر کلمه
         while (charinfo::isLetter(*end) || charinfo::isDigit(*end) || *end == '_')
             ++end;
 
         llvm::StringRef Name(BufferPtr, end - BufferPtr);
         Token::TokenKind kind = Token::ident;
 
-        // لیست کلمات کلیدی
         if (Name == "var") kind = Token::KW_var;
         else if (Name == "int") kind = Token::KW_int;
         else if (Name == "float") kind = Token::KW_float;
@@ -119,38 +122,34 @@ void Lexer::next(Token &token)
         else if (Name == "to_float") kind = Token::KW_to_float;
         else if (Name == "to_bool") kind = Token::KW_to_bool;
 
+        BufferPtr = TokenStart; // برگرداندن به شروع توکن برای محاسبه صحیح
         formToken(token, end, kind);
         return;
     }
 
-    // 6. Numbers (Integer & Float)
     if (charinfo::isDigit(*BufferPtr)) {
         const char *end = BufferPtr + 1;
         while (charinfo::isDigit(*end)) ++end;
-
-        // --- تغییر جدید: بررسی اعشار ---
         if (*end == '.') {
             const char *decimalEnd = end + 1;
-            // اگر بعد از نقطه هم عدد بود، ادامه بده
             if (charinfo::isDigit(*decimalEnd)) {
                 while (charinfo::isDigit(*decimalEnd)) ++decimalEnd;
                 end = decimalEnd;
             }
         }
-        // ------------------------------
-
+        BufferPtr = TokenStart;
         formToken(token, end, Token::number);
         return;
     }
 
-    // 7. Operators
-    if (*BufferPtr == '=' && *(BufferPtr+1) == '=') { formToken(token, BufferPtr + 2, Token::eq); return; }
-    if (*BufferPtr == '!' && *(BufferPtr+1) == '=') { formToken(token, BufferPtr + 2, Token::neq); return; }
-    if (*BufferPtr == '>' && *(BufferPtr+1) == '=') { formToken(token, BufferPtr + 2, Token::gte); return; }
-    if (*BufferPtr == '<' && *(BufferPtr+1) == '=') { formToken(token, BufferPtr + 2, Token::lte); return; }
-    if (*BufferPtr == '&' && *(BufferPtr+1) == '&') { formToken(token, BufferPtr + 2, Token::land); return; }
-    if (*BufferPtr == '|' && *(BufferPtr+1) == '|') { formToken(token, BufferPtr + 2, Token::lor); return; }
+    if (*BufferPtr == '=' && *(BufferPtr+1) == '=') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::eq); return; }
+    if (*BufferPtr == '!' && *(BufferPtr+1) == '=') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::neq); return; }
+    if (*BufferPtr == '>' && *(BufferPtr+1) == '=') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::gte); return; }
+    if (*BufferPtr == '<' && *(BufferPtr+1) == '=') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::lte); return; }
+    if (*BufferPtr == '&' && *(BufferPtr+1) == '&') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::land); return; }
+    if (*BufferPtr == '|' && *(BufferPtr+1) == '|') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::lor); return; }
 
+    BufferPtr = TokenStart; // برای سوییچ کیس تک حرفی
     switch (*BufferPtr) {
         case '=': formToken(token, BufferPtr + 1, Token::assign); break;
         case '+': formToken(token, BufferPtr + 1, Token::plus); break;
@@ -169,10 +168,7 @@ void Lexer::next(Token &token)
         case ':': formToken(token, BufferPtr + 1, Token::colon); break;
         case '>': formToken(token, BufferPtr + 1, Token::gt); break;
         case '<': formToken(token, BufferPtr + 1, Token::lt); break;
-
-        // شناسایی '_' به عنوان یک توکن مستقل (برای match)
         case '_': formToken(token, BufferPtr + 1, Token::underscore); break;
-
         default:  formToken(token, BufferPtr + 1, Token::unknown);
     }
 }
@@ -181,6 +177,10 @@ void Lexer::formToken(Token &Tok, const char *TokEnd, Token::TokenKind Kind)
 {
     Tok.Kind = Kind;
     Tok.Text = llvm::StringRef(BufferPtr, TokEnd - BufferPtr);
-    Tok.Line = CurrentLine; // ذخیره شماره خط در توکن نهایی
+    Tok.Line = CurrentLine;
+
+    // محاسبه ستون: شروع توکن (BufferPtr) کجاست؟
+    Tok.Col = calculateColumn(BufferPtr);
+
     BufferPtr = TokEnd;
 }
