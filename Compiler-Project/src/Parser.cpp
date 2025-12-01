@@ -258,7 +258,23 @@ Expr *Parser::parseTerm() {
     return Left;
 }
 
+// در فایل src/Parser.cpp
+
 Expr *Parser::parseFactor() {
+    // پشتیبانی از اعداد منفی (Unary Minus)
+    // اگر منفی دیدیم، آن را به صورت (0 - Value) تفسیر می‌کنیم
+    if (Tok.is(Token::minus)) {
+        int L = Tok.getLine(), C = Tok.getCol();
+        advance(); // رد کردن علامت منفی
+
+        Expr *Right = parseFactor(); // گرفتن عدد بعد از منفی
+
+        // ساخت عبارت: 0 - Right
+        return new BinaryOp(L, C, BinaryOp::Minus,
+                            new Final(L, C, Final::Number, "0"),
+                            Right);
+    }
+
     return parseFinal();
 }
 

@@ -1,4 +1,8 @@
-
-array list = [1,2];
-var d int = length(list);
+array list = [1,2,5,6,10,15,16];
+print(abs(-2));
+print(to_bool(0);
+print(to_int(1.2));
+print(to_float(1));
+print(index(list,7));
+var d int = max(list);
 print(d);
