@@ -1,10 +1,8 @@
 #include "CodeGen.h"
 #include "Parser.h"
 #include "Sema.h"
-// #include "ASTDumper.h" // اضافه شد برای تولید JSON
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
-// #include "llvm/Support/FileSystem.h" // اضافه شد برای نوشتن فایل
 #include "llvm/Support/raw_ostream.h"
 
 // دریافت ورودی از آرگومان‌های خط فرمان
@@ -30,27 +28,18 @@ int main(int argc, const char **argv)
         return 1;
     }
 
-    // // 2. Observability: تولید فایل ast.json
-    // std::error_code EC;
-    // llvm::raw_fd_ostream JsonFile("ast.json", EC);
-    // if (!EC) {
-    //     ASTDumper Dumper(JsonFile);
-    //     Dumper.dump(Tree);
-    //     // llvm::outs() << "AST dumped to ast.json\n"; // (اختیاری: چاپ پیام موفقیت)
-    // } else {
-    //     llvm::errs() << "Could not create ast.json: " << EC.message() << "\n";
-    // }
+    // ===== حذف saveAst برای جلوگیری از خطا =====
+    // saveAst(Tree, "ast.json");
 
-    // 3. Semantic Analysis
+    // 2. Semantic Analysis
     Sema Semantic;
-    // تغییر مهم: پاس دادن متن کد (Input) برای نمایش خطای زیبا
     if (Semantic.semantic(Tree, Input))
     {
         llvm::errs() << "Semantic errors occurred\n";
         return 1;
     }
 
-    // 4. Code Generation
+    // 3. Code Generation
     CodeGen CodeGenerator;
     CodeGenerator.compile(Tree);
 

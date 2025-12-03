@@ -233,34 +233,75 @@ void CodeGen::visit(ArrayLiteral &Node) {
 void CodeGen::visit(ForEachStmt &Node) {
     Function *TheFunction = Builder.GetInsertBlock()->getParent();
     Type *IntType = Type::getInt32Ty(Context);
-    if (NamedValues.find(std::string(Node.getCollection())) == NamedValues.end()) return;
-    AllocaInst *ArrPtrLoc = NamedValues[std::string(Node.getCollection())];
+
+    // collection باید به صورت شناسه ذخیره شده باشد (parser فعلی همین را تولید می‌کند)
+    std::string ColName = std::string(Node.getCollection());
+    if (NamedValues.find(ColName) == NamedValues.end()) {
+        // collection یافت نشد - نمی‌توان تولید کد کرد
+        errs() << "CodeGen Error: collection '" << ColName << "' not found\n";
+        return;
+    }
+
+    AllocaInst *ArrPtrLoc = NamedValues[ColName]; // این Alloca وقتی declaration انجام شد ساخته شده
+    // بارگذاری اشاره‌گر به ساختار آرایه (یک i32* که به طول و اعضا اشاره دارد)
     Value *ArrBasePtr = Builder.CreateLoad(ArrPtrLoc->getAllocatedType(), ArrPtrLoc, "arrBase");
+    // طول آرایه را بخوان
     Value *SizeVal = Builder.CreateLoad(IntType, ArrBasePtr, "arrSize");
-    AllocaInst *IndexVar = CreateEntryBlockAlloca(TheFunction, "idx", IntType);
+
+    // آیندکس و متغیر شمارنده
+    AllocaInst *IndexVar = CreateEntryBlockAlloca(TheFunction, "foreach_idx", IntType);
     Builder.CreateStore(ConstantInt::get(IntType, 0), IndexVar);
+
+    // متغیر برای آیتم فعلی
     AllocaInst *ItemVar = CreateEntryBlockAlloca(TheFunction, Node.getIterator(), IntType);
-    NamedValues[std::string(Node.getIterator())] = ItemVar;
-    BasicBlock *CondBB = BasicBlock::Create(Context, "loop.cond", TheFunction);
-    BasicBlock *BodyBB = BasicBlock::Create(Context, "loop.body");
-    BasicBlock *EndBB = BasicBlock::Create(Context, "loop.end");
+
+    // ذخیره مقدار قبلی در صورت وجود (برای پشتیبانی از shadowing)
+    std::string IterNameStr = std::string(Node.getIterator());
+    AllocaInst *OldBinding = nullptr;
+    auto itOld = NamedValues.find(IterNameStr);
+    if (itOld != NamedValues.end()) {
+        OldBinding = itOld->second;
+    }
+    NamedValues[IterNameStr] = ItemVar;
+
+    // بلوک‌های حلقه
+    BasicBlock *CondBB = BasicBlock::Create(Context, "foreach.cond", TheFunction);
+    BasicBlock *BodyBB = BasicBlock::Create(Context, "foreach.body");
+    BasicBlock *EndBB  = BasicBlock::Create(Context, "foreach.end");
     Builder.CreateBr(CondBB);
+
+    // شرط
     Builder.SetInsertPoint(CondBB);
-    Value *CurIdx = Builder.CreateLoad(IntType, IndexVar);
+    Value *CurIdx = Builder.CreateLoad(IntType, IndexVar, "cur_idx");
     Value *LoopCond = Builder.CreateICmpSLT(CurIdx, SizeVal);
     Builder.CreateCondBr(LoopCond, BodyBB, EndBB);
+
+    // بدنه
     TheFunction->getBasicBlockList().push_back(BodyBB);
     Builder.SetInsertPoint(BodyBB);
+    // real idx = idx + 1 (چون ساختار آرایه ما طول در خانه 0 دارد، عناصر از 1 شروع می‌شوند)
     Value *RealIdx = Builder.CreateAdd(CurIdx, ConstantInt::get(IntType, 1));
+    // گرفتن اشاره‌گر عنصر
     Value *ElemPtr = Builder.CreateGEP(IntType, ArrBasePtr, RealIdx);
     Value *ElemVal = Builder.CreateLoad(IntType, ElemPtr);
+    // ذخیره در متغیر iterator
     Builder.CreateStore(ElemVal, ItemVar);
+
+    // تولید بدنه حلقه
     Node.getBody()->accept(*this);
+
+    // افزایش اندیس
     Value *NextIdx = Builder.CreateAdd(CurIdx, ConstantInt::get(IntType, 1));
     Builder.CreateStore(NextIdx, IndexVar);
     Builder.CreateBr(CondBB);
+
+    // انتهای حلقه
     TheFunction->getBasicBlockList().push_back(EndBB);
     Builder.SetInsertPoint(EndBB);
+
+    // بازگرداندن binding قدیمی iterator (اگر وجود داشت) یا حذف آن
+    if (OldBinding) NamedValues[IterNameStr] = OldBinding;
+    else NamedValues.erase(IterNameStr);
 }
 
 void CodeGen::visit(MatchStmt &Node) {

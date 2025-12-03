@@ -108,13 +108,14 @@ public:
                  // خطا روی کل عملیات (مکان عملگر)
                  error(Node, "Type mismatch: " + LeftType + " vs " + RightType);
                  CurrentExprType = "unknown";
+             } else {
+                 // int <-> float combination: result is float
+                 CurrentExprType = "float";
              }
         } else {
             CurrentExprType = LeftType;
         }
     }
-
-    // ... بقیه توابع (مشابه قبل، بدون تغییر عمده) ...
 
     virtual void visit(Final &Node) override {
         if (Node.getKind() == Final::Ident) {
@@ -137,18 +138,87 @@ public:
     // برای کوتاهی کد بقیه توابع مثل قبل هستند
     virtual void visit(CompoundStmt &Node) override { Node.getValue()->accept(*this); }
     virtual void visit(UnaryStmt &Node) override {}
-    virtual void visit(MatchStmt &Node) override { for(auto &C : Node.getCases()) C.second->accept(*this); }
+    virtual void visit(MatchStmt &Node) override { for(auto &C : Node.getCases()) { if (C.first) C.first->accept(*this); if (C.second) C.second->accept(*this); } }
     virtual void visit(RangeExpr &Node) override {}
-    virtual void visit(IfStmt &Node) override { Node.getThen()->accept(*this); }
-    virtual void visit(ForStmt &Node) override { Node.getBody()->accept(*this); }
-    virtual void visit(ForEachStmt &Node) override {
-        SymbolTable[Node.getIterator()] = "int";
-        Node.getBody()->accept(*this);
-        SymbolTable.erase(Node.getIterator());
+    virtual void visit(IfStmt &Node) override {
+        if (Node.getCond()) {
+            Node.getCond()->accept(*this);
+            if (CurrentExprType != "bool") {
+                errorOnNode(Node.getCond(), "Condition in if must be boolean, got " + CurrentExprType);
+            }
+        }
+        if (Node.getThen()) Node.getThen()->accept(*this);
+        for (auto &E : Node.getElifs()) {
+            if (E.first) {
+                E.first->accept(*this);
+                if (CurrentExprType != "bool") {
+                    errorOnNode(E.first, "Condition in elif must be boolean, got " + CurrentExprType);
+                }
+            }
+            if (E.second) E.second->accept(*this);
+        }
+        if (Node.getElse()) Node.getElse()->accept(*this);
     }
-    virtual void visit(PrintStmt &Node) override { Node.getArg()->accept(*this); }
+    virtual void visit(ForStmt &Node) override {
+        if (Node.getInit()) Node.getInit()->accept(*this);
+        if (Node.getCond()) {
+            Node.getCond()->accept(*this);
+            if (CurrentExprType != "bool") {
+                errorOnNode(Node.getCond(), "Condition in for must be boolean, got " + CurrentExprType);
+            }
+        }
+        if (Node.getBody()) Node.getBody()->accept(*this);
+        if (Node.getStep()) {
+            // step is a statement; allow it but check inside
+            Node.getStep()->accept(*this);
+        }
+    }
+
+    virtual void visit(ForEachStmt &Node) override {
+        // 1) بررسی اینکه collection به صورت شناسه باشد و موجود است
+        llvm::StringRef ColName = Node.getCollection();
+        if (!ColName.empty() && SymbolTable.find(ColName) == SymbolTable.end()) {
+            // اگر collection شناسه نبود این خط اجرا نمی‌شود (در حال حاضر collection همیشه شناسه است چون پارسر آن را به عنوان ident می‌گرفت)
+            // اما برای ایمنی:
+            errorOnNode(&Node, "Collection '" + ColName + "' is not defined.");
+            return;
+        }
+
+        // 2) تایپ collection را چک کن
+        llvm::StringRef ColType = SymbolTable.lookup(ColName);
+        if (ColType != "array") {
+            errorOnNode(&Node, "foreach expects an array collection, but '" + ColName + "' is of type " + ColType);
+            return;
+        }
+
+        // 3) iterator را در جدول سمبل‌ها وارد کن (نوع عنصر آرایه فعلاً int)
+        llvm::StringRef IterName = Node.getIterator();
+        bool hadOld = false;
+        llvm::StringRef OldType;
+        if (SymbolTable.count(IterName)) {
+            hadOld = true;
+            OldType = SymbolTable[IterName];
+        }
+        SymbolTable[IterName] = "int"; // فرض: آرایه از اعداد int تشکیل شده
+
+        // 4) چک کردن بدنه
+        if (Node.getBody()) Node.getBody()->accept(*this);
+
+        // 5) بازگرداندن وضعیت قبلی iterator
+        if (hadOld) SymbolTable[IterName] = OldType;
+        else SymbolTable.erase(IterName);
+    }
+
+    virtual void visit(PrintStmt &Node) override { if (Node.getArg()) Node.getArg()->accept(*this); }
     virtual void visit(ArrayLiteral &Node) override { CurrentExprType = "array"; }
-    virtual void visit(BuiltinCall &Node) override { CurrentExprType = "int"; }
+    virtual void visit(BuiltinCall &Node) override {
+        // برخی builtinها نوع مشخصی برمی‌گردانند؛ برای سادگی فعلی، بیشتر آن‌ها int برمی‌گردانند
+        llvm::StringRef Name(Node.getName());
+        if (Name == "to_float") CurrentExprType = "float";
+        else if (Name == "to_bool") CurrentExprType = "bool";
+        else if (Name == "length") CurrentExprType = "int";
+        else CurrentExprType = "int";
+    }
 };
 }
 
