@@ -37,17 +37,36 @@ AST *Parser::parseStatement() {
         case Token::KW_MIE: case Token::KW_AND: case Token::KW_OR:
             return parseMathCommand();
 
+        case Token::ident: {
+            int L = Tok.getLine(), C = Tok.getCol();
+            llvm::StringRef Name = Tok.getText();
+            advance();
+
+            Expr *Index = nullptr;
+            if (consume(Token::l_square)) {
+                Index = parseExpr();
+                if (!consume(Token::r_square)) { error(); return nullptr; }
+            }
+
+            if (consume(Token::plus_plus)) {
+                consume(Token::semicolon);
+                return new UnaryStmt(L, C, Name, UnaryStmt::INC, Index);
+            }
+            if (consume(Token::minus_minus)) {
+                consume(Token::semicolon);
+                return new UnaryStmt(L, C, Name, UnaryStmt::DEC, Index);
+            }
+            error(); return nullptr;
+        }
+
         default:
             error(); return nullptr;
     }
 }
 
 Declaration *Parser::parseDeclaration() {
-    advance(); // رد کردن 'var'
-
-    // --- تغییر مهم: مکان را اینجا (روی نام متغیر) ذخیره کن ---
+    advance();
     int L = Tok.getLine(), C = Tok.getCol();
-
     if (expect(Token::ident)) return nullptr;
     llvm::StringRef Name = Tok.getText();
     advance();
@@ -62,51 +81,48 @@ Declaration *Parser::parseDeclaration() {
 
     Expr *Init = nullptr;
     if (consume(Token::assign)) Init = parseExpr();
-
     consume(Token::semicolon);
     return new Declaration(L, C, Name, TypeVal, Init);
 }
 
 Declaration *Parser::parseArrayDeclaration() {
-    advance(); // رد کردن 'array'
-
-    // --- تغییر مهم: مکان روی نام آرایه ---
+    advance();
     int L = Tok.getLine(), C = Tok.getCol();
-
     if (expect(Token::ident)) return nullptr;
     llvm::StringRef Name = Tok.getText();
     advance();
 
     Expr *Init = nullptr;
     if (consume(Token::assign)) Init = parseExpr();
-
     if (consume(Token::semicolon)) {}
-
     return new Declaration(L, C, Name, "array", Init);
 }
 
 AST *Parser::parseMathCommand() {
     Token::TokenKind OpKind = Tok.getKind();
-    advance(); // رد کردن عملگر (ADD, ...)
-
-    // --- تغییر مهم: مکان روی متغیر هدف ---
+    advance();
     int L = Tok.getLine(), C = Tok.getCol();
-
     if (expect(Token::ident)) return nullptr;
     llvm::StringRef Target = Tok.getText();
     advance();
 
+    Expr *IndexExpr = nullptr;
+    if (consume(Token::l_square)) {
+        IndexExpr = parseExpr();
+        if (!consume(Token::r_square)) { error(); return nullptr; }
+    }
+
     if (OpKind == Token::KW_INC || OpKind == Token::KW_DEC) {
         consume(Token::semicolon);
         UnaryStmt::OpType Op = (OpKind == Token::KW_INC) ? UnaryStmt::INC : UnaryStmt::DEC;
-        return new UnaryStmt(L, C, Target, Op);
+        return new UnaryStmt(L, C, Target, Op, IndexExpr);
     }
 
     if (OpKind == Token::KW_PLE || OpKind == Token::KW_MIE) {
         Expr *Val = parseExpr();
         consume(Token::semicolon);
         CompoundStmt::OpType Op = (OpKind == Token::KW_PLE) ? CompoundStmt::PLE : CompoundStmt::MIE;
-        return new CompoundStmt(L, C, Target, Val, Op);
+        return new CompoundStmt(L, C, Target, Val, Op, IndexExpr);
     }
 
     Expr *Op1 = parseExpr();
@@ -124,11 +140,11 @@ AST *Parser::parseMathCommand() {
         case Token::KW_OR:  BinOp = BinaryOp::Or; break;
         default: BinOp = BinaryOp::Plus;
     }
-    return new Assignment(L, C, Target, new BinaryOp(L, C, BinOp, Op1, Op2));
+    return new Assignment(L, C, Target, new BinaryOp(L, C, BinOp, Op1, Op2), IndexExpr);
 }
 
 IfStmt *Parser::parseIf() {
-    int L = Tok.getLine(), C = Tok.getCol(); // برای if مکان فعلی خوب است
+    int L = Tok.getLine(), C = Tok.getCol();
     advance();
     if (consume(Token::l_paren)) {}
     Expr *Cond = parseExpr();
@@ -156,7 +172,6 @@ MatchStmt *Parser::parseMatch() {
     int L = Tok.getLine(), C = Tok.getCol();
     advance();
     Expr *Target = parseExpr();
-
     if (!consume(Token::l_brace)) { error(); return nullptr; }
 
     llvm::SmallVector<std::pair<Expr*, AST*>, 8> Cases;
@@ -177,7 +192,6 @@ MatchStmt *Parser::parseMatch() {
 
         AST *Body = parseStatement();
         Cases.push_back({Pattern, Body});
-
         consume(Token::comma);
     }
     consume(Token::r_brace);
@@ -188,10 +202,45 @@ AST *Parser::parseLoop() {
     int L = Tok.getLine(), C = Tok.getCol();
     if (Tok.getKind() == Token::KW_for) {
         advance(); consume(Token::l_paren);
-        AST *Init = parseStatement();
+        AST *Init = nullptr;
+        if (Tok.getKind() == Token::KW_int) {
+            int DL = Tok.getLine(), DC = Tok.getCol();
+            advance();
+            if (expect(Token::ident)) return nullptr;
+            llvm::StringRef Name = Tok.getText(); advance();
+            if (expect(Token::assign)) return nullptr;
+            advance();
+            Expr *Val = parseExpr();
+            consume(Token::semicolon);
+            Init = new Declaration(DL, DC, Name, "int", Val);
+        } else {
+            Init = parseStatement();
+        }
+
         Expr *Cond = parseExpr();
         consume(Token::semicolon);
-        AST *Step = parseStatement();
+
+        AST *Step = nullptr;
+        if (Tok.getKind() == Token::ident) {
+            int SL = Tok.getLine(), SC = Tok.getCol();
+            llvm::StringRef Name = Tok.getText();
+            advance();
+            Expr *Index = nullptr;
+            if (consume(Token::l_square)) {
+                Index = parseExpr();
+                consume(Token::r_square);
+            }
+
+            if (consume(Token::plus_plus)) {
+                Step = new UnaryStmt(SL, SC, Name, UnaryStmt::INC, Index);
+            }
+            else if (consume(Token::minus_minus)) {
+                Step = new UnaryStmt(SL, SC, Name, UnaryStmt::DEC, Index);
+            }
+        } else {
+            Step = parseStatement();
+        }
+
         consume(Token::r_paren);
         Block *Body = parseBlock();
         return new ForStmt(L, C, Init, Cond, Step, Body);
@@ -199,13 +248,10 @@ AST *Parser::parseLoop() {
         advance(); consume(Token::l_paren);
         if (expect(Token::ident)) return nullptr;
         llvm::StringRef Iter = Tok.getText(); advance();
-
         if (expect(Token::KW_in)) return nullptr;
         advance();
-
         if (expect(Token::ident)) return nullptr;
         llvm::StringRef Col = Tok.getText(); advance();
-
         consume(Token::r_paren);
         Block *Body = parseBlock();
         return new ForEachStmt(L, C, Iter, Col, Body);
@@ -220,22 +266,69 @@ PrintStmt *Parser::parsePrint() {
     return new PrintStmt(L, C, Val);
 }
 
+// --- بخش اصلاح شده اولویت عملگرها ---
+
+// سطح 1: Logical OR (||)
 Expr *Parser::parseExpr() {
-    Expr *Left = parseTerm();
-    while (Tok.isOneOf(Token::plus, Token::minus, Token::eq, Token::neq, Token::lt, Token::gt, Token::lte, Token::gte, Token::land, Token::lor)) {
-        int L = Tok.getLine(), C = Tok.getCol(); // مکان عملگر
+    Expr *Left = parseLogicAnd();
+    while (Tok.is(Token::lor)) {
+        int L = Tok.getLine(), C = Tok.getCol();
+        advance();
+        Expr *Right = parseLogicAnd();
+        Left = new BinaryOp(L, C, BinaryOp::Or, Left, Right);
+    }
+    return Left;
+}
+
+// سطح 2: Logical AND (&&)
+Expr *Parser::parseLogicAnd() {
+    Expr *Left = parseEquality();
+    while (Tok.is(Token::land)) {
+        int L = Tok.getLine(), C = Tok.getCol();
+        advance();
+        Expr *Right = parseEquality();
+        Left = new BinaryOp(L, C, BinaryOp::And, Left, Right);
+    }
+    return Left;
+}
+
+// سطح 3: Equality (==, !=)
+Expr *Parser::parseEquality() {
+    Expr *Left = parseRelational();
+    while (Tok.isOneOf(Token::eq, Token::neq)) {
+        int L = Tok.getLine(), C = Tok.getCol();
+        BinaryOp::Operator Op = Tok.is(Token::eq) ? BinaryOp::Eq : BinaryOp::Neq;
+        advance();
+        Expr *Right = parseRelational();
+        Left = new BinaryOp(L, C, Op, Left, Right);
+    }
+    return Left;
+}
+
+// سطح 4: Relational (<, >, <=, >=)
+Expr *Parser::parseRelational() {
+    Expr *Left = parseAdditive();
+    while (Tok.isOneOf(Token::lt, Token::gt, Token::lte, Token::gte)) {
+        int L = Tok.getLine(), C = Tok.getCol();
         BinaryOp::Operator Op;
-        if (Tok.is(Token::plus)) Op = BinaryOp::Plus;
-        else if (Tok.is(Token::minus)) Op = BinaryOp::Minus;
-        else if (Tok.is(Token::eq)) Op = BinaryOp::Eq;
-        else if (Tok.is(Token::neq)) Op = BinaryOp::Neq;
-        else if (Tok.is(Token::lt)) Op = BinaryOp::Lt;
+        if (Tok.is(Token::lt)) Op = BinaryOp::Lt;
         else if (Tok.is(Token::gt)) Op = BinaryOp::Gt;
         else if (Tok.is(Token::lte)) Op = BinaryOp::Lte;
-        else if (Tok.is(Token::gte)) Op = BinaryOp::Gte;
-        else if (Tok.is(Token::land)) Op = BinaryOp::And;
-        else if (Tok.is(Token::lor)) Op = BinaryOp::Or;
+        else Op = BinaryOp::Gte;
 
+        advance();
+        Expr *Right = parseAdditive();
+        Left = new BinaryOp(L, C, Op, Left, Right);
+    }
+    return Left;
+}
+
+// سطح 5: Additive (+, -)
+Expr *Parser::parseAdditive() {
+    Expr *Left = parseTerm();
+    while (Tok.isOneOf(Token::plus, Token::minus)) {
+        int L = Tok.getLine(), C = Tok.getCol();
+        BinaryOp::Operator Op = Tok.is(Token::plus) ? BinaryOp::Plus : BinaryOp::Minus;
         advance();
         Expr *Right = parseTerm();
         Left = new BinaryOp(L, C, Op, Left, Right);
@@ -243,6 +336,7 @@ Expr *Parser::parseExpr() {
     return Left;
 }
 
+// سطح 6: Multiplicative (*, /, %)
 Expr *Parser::parseTerm() {
     Expr *Left = parseFactor();
     while (Tok.isOneOf(Token::star, Token::slash, Token::mod)) {
@@ -251,6 +345,7 @@ Expr *Parser::parseTerm() {
         if (Tok.is(Token::star)) Op = BinaryOp::Mul;
         else if (Tok.is(Token::slash)) Op = BinaryOp::Div;
         else Op = BinaryOp::Mod;
+
         advance();
         Expr *Right = parseFactor();
         Left = new BinaryOp(L, C, Op, Left, Right);
@@ -258,28 +353,18 @@ Expr *Parser::parseTerm() {
     return Left;
 }
 
-// در فایل src/Parser.cpp
-
 Expr *Parser::parseFactor() {
-    // پشتیبانی از اعداد منفی (Unary Minus)
-    // اگر منفی دیدیم، آن را به صورت (0 - Value) تفسیر می‌کنیم
     if (Tok.is(Token::minus)) {
         int L = Tok.getLine(), C = Tok.getCol();
-        advance(); // رد کردن علامت منفی
-
-        Expr *Right = parseFactor(); // گرفتن عدد بعد از منفی
-
-        // ساخت عبارت: 0 - Right
-        return new BinaryOp(L, C, BinaryOp::Minus,
-                            new Final(L, C, Final::Number, "0"),
-                            Right);
+        advance();
+        Expr *Right = parseFactor();
+        return new BinaryOp(L, C, BinaryOp::Minus, new Final(L, C, Final::Number, "0"), Right);
     }
-
     return parseFinal();
 }
 
 Expr *Parser::parseFinal() {
-    int L = Tok.getLine(), C = Tok.getCol(); // مکان دقیق عدد یا متغیر
+    int L = Tok.getLine(), C = Tok.getCol();
 
     if (consume(Token::l_paren)) {
         Expr *E = parseExpr();
@@ -289,12 +374,17 @@ Expr *Parser::parseFinal() {
     if (Tok.getKind() == Token::number) {
         llvm::StringRef Val = Tok.getText();
         advance();
-        if (Val.find('.') != llvm::StringRef::npos)
-             return new Final(L, C, Final::Float, Val);
+        if (Val.find('.') != llvm::StringRef::npos) return new Final(L, C, Final::Float, Val);
         return new Final(L, C, Final::Number, Val);
     }
     if (Tok.getKind() == Token::ident) {
-        llvm::StringRef Val = Tok.getText(); advance();
+        llvm::StringRef Val = Tok.getText();
+        advance();
+        if (consume(Token::l_square)) {
+            Expr *Idx = parseExpr();
+            if (!consume(Token::r_square)) { error(); return nullptr; }
+            return new ArrayAccess(L, C, Val, Idx);
+        }
         return new Final(L, C, Final::Ident, Val);
     }
     if (Tok.getKind() == Token::string_literal) {

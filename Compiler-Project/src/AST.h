@@ -27,6 +27,7 @@ class MatchStmt;
 class CompoundStmt;
 class UnaryStmt;
 class RangeExpr;
+class ArrayAccess; // <--- جدید
 
 class ASTVisitor
 {
@@ -47,20 +48,25 @@ public:
     virtual void visit(CompoundStmt &) = 0;
     virtual void visit(UnaryStmt &) = 0;
     virtual void visit(RangeExpr &) = 0;
+    virtual void visit(ArrayAccess &) = 0; // <--- جدید
 };
 
 class AST
 {
-    // --- تغییر جدید: ذخیره مکان برای مدیریت خطا ---
     int Line;
     int Col;
-public:
-    AST(int Line, int Col) : Line(Line), Col(Col) {}
-    virtual ~AST() {}
 
+public:
+    // --- اضافه شده: شمارنده استاتیک نودها ---
+    static int NodeCount;
+
+    AST(int Line, int Col) : Line(Line), Col(Col) {
+        NodeCount++; // هر بار نودی ساخته شود، این زیاد می‌شود
+    }
+
+    virtual ~AST() {}
     int getLine() const { return Line; }
     int getCol() const { return Col; }
-
     virtual void accept(ASTVisitor &V) = 0;
 };
 
@@ -68,9 +74,7 @@ class Block : public AST
 {
     llvm::SmallVector<AST *, 8> Statements;
 public:
-    // Block معمولا لوکیشن خاصی ندارد یا لوکیشن اولین دستور است، فعلا 0,0 میگذاریم یا از پارسر میگیریم
     Block(int Line, int Col) : AST(Line, Col) {}
-
     void addStatement(AST *S) { Statements.push_back(S); }
     const llvm::SmallVector<AST *, 8> &getStatements() const { return Statements; }
     void accept(ASTVisitor &V) override { V.visit(*this); }
@@ -91,9 +95,20 @@ private:
 public:
     Final(int Line, int Col, ValueKind Kind, llvm::StringRef Val)
         : Expr(Line, Col), Kind(Kind), Val(Val) {}
-
     ValueKind getKind() const { return Kind; }
     llvm::StringRef getValue() const { return Val; }
+    void accept(ASTVisitor &V) override { V.visit(*this); }
+};
+
+// کلاس جدید برای دسترسی به آرایه: a[i]
+class ArrayAccess : public Expr {
+    llvm::StringRef VarName;
+    Expr *Index;
+public:
+    ArrayAccess(int Line, int Col, llvm::StringRef Name, Expr *Idx)
+        : Expr(Line, Col), VarName(Name), Index(Idx) {}
+    llvm::StringRef getName() const { return VarName; }
+    Expr *getIndex() { return Index; }
     void accept(ASTVisitor &V) override { V.visit(*this); }
 };
 
@@ -112,7 +127,6 @@ private:
 public:
     BinaryOp(int Line, int Col, Operator Op, Expr *L, Expr *R)
         : Expr(Line, Col), Op(Op), Left(L), Right(R) {}
-
     Expr *getLeft() { return Left; }
     Expr *getRight() { return Right; }
     Operator getOperator() { return Op; }
@@ -127,7 +141,6 @@ class Declaration : public AST
 public:
     Declaration(int Line, int Col, llvm::StringRef Name, llvm::StringRef Type, Expr *Init = nullptr)
         : AST(Line, Col), VarName(Name), Type(Type), Init(Init) {}
-
     llvm::StringRef getName() const { return VarName; }
     llvm::StringRef getType() const { return Type; }
     Expr *getInit() { return Init; }
@@ -138,12 +151,13 @@ class Assignment : public AST
 {
     llvm::StringRef VarName;
     Expr *Value;
+    Expr *Index; // <--- اضافه شد (برای a[i] = ...)
 public:
-    Assignment(int Line, int Col, llvm::StringRef Name, Expr *Val)
-        : AST(Line, Col), VarName(Name), Value(Val) {}
-
+    Assignment(int Line, int Col, llvm::StringRef Name, Expr *Val, Expr *Idx = nullptr)
+        : AST(Line, Col), VarName(Name), Value(Val), Index(Idx) {}
     llvm::StringRef getName() const { return VarName; }
     Expr *getValue() { return Value; }
+    Expr *getIndex() { return Index; }
     void accept(ASTVisitor &V) override { V.visit(*this); }
 };
 
@@ -155,12 +169,13 @@ private:
     llvm::StringRef VarName;
     Expr *Value;
     OpType Op;
+    Expr *Index; // <--- اضافه شد (برای PLE a[i] 5)
 public:
-    CompoundStmt(int Line, int Col, llvm::StringRef Name, Expr *Val, OpType Op)
-        : AST(Line, Col), VarName(Name), Value(Val), Op(Op) {}
-
+    CompoundStmt(int Line, int Col, llvm::StringRef Name, Expr *Val, OpType Op, Expr *Idx = nullptr)
+        : AST(Line, Col), VarName(Name), Value(Val), Op(Op), Index(Idx) {}
     llvm::StringRef getName() const { return VarName; }
     Expr *getValue() { return Value; }
+    Expr *getIndex() { return Index; }
     OpType getOperator() { return Op; }
     void accept(ASTVisitor &V) override { V.visit(*this); }
 };
@@ -172,11 +187,12 @@ public:
 private:
     llvm::StringRef VarName;
     OpType Op;
+    Expr *Index; // <--- اضافه شد (برای INC a[i])
 public:
-    UnaryStmt(int Line, int Col, llvm::StringRef Name, OpType Op)
-        : AST(Line, Col), VarName(Name), Op(Op) {}
-
+    UnaryStmt(int Line, int Col, llvm::StringRef Name, OpType Op, Expr *Idx = nullptr)
+        : AST(Line, Col), VarName(Name), Op(Op), Index(Idx) {}
     llvm::StringRef getName() const { return VarName; }
+    Expr *getIndex() { return Index; }
     OpType getOperator() { return Op; }
     void accept(ASTVisitor &V) override { V.visit(*this); }
 };
@@ -190,7 +206,6 @@ class IfStmt : public AST
 public:
     IfStmt(int Line, int Col, Expr *Cond, Block *Then, const llvm::SmallVector<std::pair<Expr*, Block*>, 4> &Elifs, Block *Else)
         : AST(Line, Col), Cond(Cond), ThenBlock(Then), Elifs(Elifs), ElseBlock(Else) {}
-
     Expr *getCond() { return Cond; }
     Block *getThen() { return ThenBlock; }
     const auto &getElifs() { return Elifs; }
@@ -207,7 +222,6 @@ class ForStmt : public AST
 public:
     ForStmt(int Line, int Col, AST *Init, Expr *Cond, AST *Step, Block *Body)
         : AST(Line, Col), Init(Init), Cond(Cond), Step(Step), Body(Body) {}
-
     AST *getInit() { return Init; }
     Expr *getCond() { return Cond; }
     AST *getStep() { return Step; }
@@ -223,7 +237,6 @@ class ForEachStmt : public AST
 public:
     ForEachStmt(int Line, int Col, llvm::StringRef Iter, llvm::StringRef ColName, Block *Body)
         : AST(Line, Col), IteratorName(Iter), CollectionName(ColName), Body(Body) {}
-
     llvm::StringRef getIterator() const { return IteratorName; }
     llvm::StringRef getCollection() const { return CollectionName; }
     Block *getBody() { return Body; }
@@ -237,7 +250,6 @@ class MatchStmt : public AST
 public:
     MatchStmt(int Line, int Col, Expr *T, const llvm::SmallVector<std::pair<Expr*, AST*>, 8> &Cs)
         : AST(Line, Col), Target(T), Cases(Cs) {}
-
     Expr *getTarget() { return Target; }
     const auto &getCases() { return Cases; }
     void accept(ASTVisitor &V) override { V.visit(*this); }
@@ -257,7 +269,6 @@ class ArrayLiteral : public Expr {
 public:
     ArrayLiteral(int Line, int Col, const llvm::SmallVector<Expr*, 8> &Vals)
         : Expr(Line, Col), Values(Vals) {}
-
     const llvm::SmallVector<Expr*, 8> &getValues() const { return Values; }
     void accept(ASTVisitor &V) override { V.visit(*this); }
 };
@@ -271,12 +282,10 @@ class RangeExpr : public Expr {
 public:
     RangeExpr(int Line, int Col, Expr *Target, llvm::StringRef Iter, llvm::StringRef List, Expr *Cond = nullptr)
         : Expr(Line, Col), TargetExpr(Target), IterName(Iter), ListName(List), Condition(Cond) {}
-
     Expr *getTargetExpr() { return TargetExpr; }
     llvm::StringRef getIterator() const { return IterName; }
     llvm::StringRef getList() const { return ListName; }
     Expr *getCondition() { return Condition; }
-
     void accept(ASTVisitor &V) override { V.visit(*this); }
 };
 
@@ -286,7 +295,6 @@ class BuiltinCall : public Expr {
 public:
     BuiltinCall(int Line, int Col, const std::string &Name, const llvm::SmallVector<Expr*, 4> &Args)
         : Expr(Line, Col), FuncName(Name), Args(Args) {}
-
     std::string getName() const { return FuncName; }
     const llvm::SmallVector<Expr*, 4> &getArgs() const { return Args; }
     void accept(ASTVisitor &V) override { V.visit(*this); }

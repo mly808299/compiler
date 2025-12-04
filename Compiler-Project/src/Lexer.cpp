@@ -14,23 +14,18 @@ namespace charinfo
     }
 }
 
-// تابع جادویی برای پیدا کردن شماره ستون
 int Lexer::calculateColumn(const char *TokenStart) {
     const char *LineStart = TokenStart;
-    // به عقب برمی‌گردیم تا به کاراکتر خط جدید (\n) یا شروع فایل برسیم
     while (LineStart > BufferStart && *(LineStart - 1) != '\n' && *(LineStart - 1) != '\r') {
         --LineStart;
     }
-    // فاصله توکن تا شروع خط + 1 می‌شود شماره ستون
     return (TokenStart - LineStart) + 1;
 }
 
 void Lexer::next(Token &token)
 {
     while (*BufferPtr && charinfo::isWhitespace(*BufferPtr)) {
-        if (*BufferPtr == '\n') {
-            CurrentLine++;
-        }
+        if (*BufferPtr == '\n') CurrentLine++;
         ++BufferPtr;
     }
 
@@ -39,10 +34,8 @@ void Lexer::next(Token &token)
         return;
     }
 
-    // ذخیره مکان شروع توکن قبل از اینکه BufferPtr جلو برود
     const char *TokenStart = BufferPtr;
 
-    // Handle Multi-line Comments
     if (*BufferPtr == '/' && *(BufferPtr + 1) == '*') {
         BufferPtr += 2;
         while (*BufferPtr && !(*BufferPtr == '*' && *(BufferPtr + 1) == '/')) {
@@ -54,7 +47,6 @@ void Lexer::next(Token &token)
         return;
     }
 
-    // Handle Single Line Comments
     if (*BufferPtr == '/' && *(BufferPtr + 1) == '/') {
         BufferPtr += 2;
         while (*BufferPtr && *BufferPtr != '\n' && *BufferPtr != '\r') {
@@ -68,7 +60,6 @@ void Lexer::next(Token &token)
         const char *end = BufferPtr + 1;
         while (*end && *end != '"') ++end;
         if (*end == '"') ++end;
-        // بازنشانی بافر پوینتر موقت برای formToken
         BufferPtr = TokenStart;
         formToken(token, end, Token::string_literal);
         return;
@@ -122,7 +113,7 @@ void Lexer::next(Token &token)
         else if (Name == "to_float") kind = Token::KW_to_float;
         else if (Name == "to_bool") kind = Token::KW_to_bool;
 
-        BufferPtr = TokenStart; // برگرداندن به شروع توکن برای محاسبه صحیح
+        BufferPtr = TokenStart;
         formToken(token, end, kind);
         return;
     }
@@ -142,6 +133,11 @@ void Lexer::next(Token &token)
         return;
     }
 
+    // --- اضافه شده: ++ و -- ---
+    if (*BufferPtr == '+' && *(BufferPtr+1) == '+') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::plus_plus); return; }
+    if (*BufferPtr == '-' && *(BufferPtr+1) == '-') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::minus_minus); return; }
+    // ------------------------
+
     if (*BufferPtr == '=' && *(BufferPtr+1) == '=') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::eq); return; }
     if (*BufferPtr == '!' && *(BufferPtr+1) == '=') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::neq); return; }
     if (*BufferPtr == '>' && *(BufferPtr+1) == '=') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::gte); return; }
@@ -149,7 +145,7 @@ void Lexer::next(Token &token)
     if (*BufferPtr == '&' && *(BufferPtr+1) == '&') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::land); return; }
     if (*BufferPtr == '|' && *(BufferPtr+1) == '|') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::lor); return; }
 
-    BufferPtr = TokenStart; // برای سوییچ کیس تک حرفی
+    BufferPtr = TokenStart;
     switch (*BufferPtr) {
         case '=': formToken(token, BufferPtr + 1, Token::assign); break;
         case '+': formToken(token, BufferPtr + 1, Token::plus); break;
@@ -178,9 +174,6 @@ void Lexer::formToken(Token &Tok, const char *TokEnd, Token::TokenKind Kind)
     Tok.Kind = Kind;
     Tok.Text = llvm::StringRef(BufferPtr, TokEnd - BufferPtr);
     Tok.Line = CurrentLine;
-
-    // محاسبه ستون: شروع توکن (BufferPtr) کجاست؟
     Tok.Col = calculateColumn(BufferPtr);
-
     BufferPtr = TokEnd;
 }

@@ -25,7 +25,6 @@ public:
         if (Node) Node->accept(*this);
     }
 
-    // Helper to wrap object
     void visit(AST &Node) override {}
 
     void visit(Block &Node) override {
@@ -64,6 +63,13 @@ public:
         OS << "{\n"; Indent++;
         printKey("kind"); OS << "\"Assignment\",\n";
         printKey("target"); OS << "\"" << Node.getName() << "\",\n";
+
+        if (Node.getIndex()) {
+            printKey("index");
+            Node.getIndex()->accept(*this);
+            OS << ",\n";
+        }
+
         printKey("value");
         Node.getValue()->accept(*this);
         OS << "\n";
@@ -98,7 +104,6 @@ public:
         Indent--; indent(); OS << "}";
     }
 
-    // برای سایر نودها پیاده‌سازی ساده (برای کوتاه شدن کد، بقیه را هم مشابه بالا می‌توان تکمیل کرد)
     void visit(PrintStmt &Node) override {
         OS << "{\n"; Indent++;
         printKey("kind"); OS << "\"PrintStmt\",\n";
@@ -108,16 +113,27 @@ public:
         Indent--; indent(); OS << "}";
     }
 
-    // پیاده‌سازی‌های خالی یا ساده برای جلوگیری از ارور کامپایل
-    void visit(IfStmt &Node) { OS << "{\"kind\": \"IfStmt\"}"; }
-    void visit(ForStmt &Node) { OS << "{\"kind\": \"ForStmt\"}"; }
-    void visit(ForEachStmt &Node) { OS << "{\"kind\": \"ForEachStmt\"}"; }
-    void visit(ArrayLiteral &Node) { OS << "{\"kind\": \"ArrayLiteral\"}"; }
-    void visit(BuiltinCall &Node) { OS << "{\"kind\": \"BuiltinCall\"}"; }
-    void visit(MatchStmt &Node) { OS << "{\"kind\": \"MatchStmt\"}"; }
-    void visit(CompoundStmt &Node) { OS << "{\"kind\": \"CompoundStmt\"}"; }
-    void visit(UnaryStmt &Node) { OS << "{\"kind\": \"UnaryStmt\"}"; }
-    void visit(RangeExpr &Node) { OS << "{\"kind\": \"RangeExpr\"}"; }
+    // --- توابع جدید (با override) ---
+
+    void visit(ArrayAccess &Node) override {
+        OS << "{\n"; Indent++;
+        printKey("kind"); OS << "\"ArrayAccess\",\n";
+        printKey("name"); OS << "\"" << Node.getName() << "\",\n";
+        printKey("index");
+        Node.getIndex()->accept(*this);
+        OS << "\n";
+        Indent--; indent(); OS << "}";
+    }
+
+    void visit(IfStmt &Node) override { OS << "{\"kind\": \"IfStmt\"}"; }
+    void visit(ForStmt &Node) override { OS << "{\"kind\": \"ForStmt\"}"; }
+    void visit(ForEachStmt &Node) override { OS << "{\"kind\": \"ForEachStmt\"}"; }
+    void visit(ArrayLiteral &Node) override { OS << "{\"kind\": \"ArrayLiteral\"}"; }
+    void visit(BuiltinCall &Node) override { OS << "{\"kind\": \"BuiltinCall\"}"; }
+    void visit(MatchStmt &Node) override { OS << "{\"kind\": \"MatchStmt\"}"; }
+    void visit(CompoundStmt &Node) override { OS << "{\"kind\": \"CompoundStmt\"}"; }
+    void visit(UnaryStmt &Node) override { OS << "{\"kind\": \"UnaryStmt\"}"; }
+    void visit(RangeExpr &Node) override { OS << "{\"kind\": \"RangeExpr\"}"; }
 };
 
 #endif

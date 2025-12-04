@@ -18,6 +18,12 @@ public:
         comma, semicolon, colon, underscore,
         l_paren, r_paren, l_brace, r_brace, l_square, r_square,
         assign, plus, minus, star, slash, mod,
+
+        // --- اضافه شد ---
+        plus_plus,   // ++
+        minus_minus, // --
+        // ----------------
+
         eq, neq, gt, lt, gte, lte,
         land, lor, not_op,
         KW_var, KW_int, KW_float, KW_bool, KW_array, KW_string, KW_true, KW_false,
@@ -33,7 +39,7 @@ private:
     TokenKind Kind;
     llvm::StringRef Text;
     int Line;
-    int Col; // شماره ستون
+    int Col;
 
 public:
     TokenKind getKind() const { return Kind; }
@@ -49,8 +55,8 @@ public:
 
 class Lexer
 {
-    const char *BufferStart; // شروع کل فایل
-    const char *BufferPtr;   // مکان فعلی
+    const char *BufferStart;
+    const char *BufferPtr;
     int CurrentLine = 1;
 
 public:
@@ -65,7 +71,6 @@ public:
 
 private:
     void formToken(Token &Result, const char *TokEnd, Token::TokenKind Kind);
-    // تابع جدید برای محاسبه دقیق ستون
     int calculateColumn(const char *TokenStart);
 };
 

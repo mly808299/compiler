@@ -14,18 +14,18 @@ class CodeGen : public ASTVisitor
     llvm::Module *M;
     llvm::IRBuilder<> Builder;
 
-    // تغییر مهم: نوع این مپ باید AllocaInst باشد نه Value
     std::map<std::string, llvm::AllocaInst *> NamedValues;
     llvm::Value *V;
 
     llvm::AllocaInst *CreateEntryBlockAlloca(llvm::Function *TheFunction, llvm::StringRef VarName, llvm::Type *Type);
 
-    // --- توابع و متغیرهای جدید که ارور می‌دادند ---
     void setupPrintf();
     void setupExit();
     llvm::FunctionCallee PrintfFunc;
     llvm::FunctionCallee ExitFunc;
-    // ---------------------------------------------
+
+    // --- تابع کمکی جدید که فراموش شده بود ---
+    llvm::Value* getElemPtr(llvm::StringRef VarName, Expr *IndexExpr); // <--- اضافه شد
 
 public:
     CodeGen();
@@ -44,11 +44,15 @@ public:
     virtual void visit(ArrayLiteral &Node) override;
     virtual void visit(BuiltinCall &Node) override;
 
-    // متدهای جدید برای پشتیبانی کامل
     virtual void visit(MatchStmt &Node) override;
     virtual void visit(CompoundStmt &Node) override;
     virtual void visit(UnaryStmt &Node) override;
     virtual void visit(RangeExpr &Node) override;
+
+    // --- متد ویزیتور جدید که فراموش شده بود ---
+    virtual void visit(ArrayAccess &Node) override; // <--- اضافه شد
+    // در کلاس CodeGen (public):
+    void dumpLLVMIR(); // <--- تابع جدید
 };
 
 #endif

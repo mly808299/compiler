@@ -14,7 +14,6 @@ class InputCheck : public ASTVisitor {
     void printError(int Line, int Col, const llvm::Twine &Msg) {
         HasError = true;
         llvm::errs() << "input.txt:" << Line << ":" << Col << ": error: " << Msg << "\n";
-
         llvm::SmallVector<llvm::StringRef, 100> Lines;
         SourceCode.split(Lines, '\n');
         if (Line > 0 && Line <= Lines.size()) {
@@ -31,7 +30,6 @@ class InputCheck : public ASTVisitor {
         printError(Node.getLine(), Node.getCol(), Msg);
     }
 
-    // تابع جدید: ارور دادن روی یک نود خاص (مثل سمت راست تساوی)
     void errorOnNode(AST *Node, const llvm::Twine &Msg) {
         if (Node) error(*Node, Msg);
     }
@@ -51,18 +49,12 @@ public:
         llvm::StringRef Type = Node.getType();
 
         if (SymbolTable.count(Name)) {
-            error(Node, "Variable '" + Name + "' is already declared."); // اینجا آدرس دقیق روی نام است
+            error(Node, "Variable '" + Name + "' is already declared.");
             return;
         }
 
         if (Node.getInit()) {
             Node.getInit()->accept(*this);
-            if (CurrentExprType != "unknown" && CurrentExprType != Type) {
-                if (Type != "array" && !(Type == "float" && CurrentExprType == "int")) {
-                     // خطا را روی مقدار اولیه نشان بده، نه روی کل تعریف
-                     errorOnNode(Node.getInit(), "Type mismatch in declaration. Expected " + Type + ", got " + CurrentExprType);
-                }
-            }
         }
         SymbolTable[Name] = Type;
     }
@@ -75,52 +67,137 @@ public:
         }
         llvm::StringRef ExpectedType = SymbolTable[Name];
 
+        // حالت ۱: مقداردهی به خانه آرایه
+        if (Node.getIndex()) {
+            if (ExpectedType != "array") {
+                error(Node, "Variable '" + Name + "' is not an array.");
+                return;
+            }
+            Node.getIndex()->accept(*this);
+
+            // چک کردن مقدار سمت راست
+            if (Node.getValue()) {
+                Node.getValue()->accept(*this);
+                // فعلاً فرض می‌کنیم آرایه‌ها int هستند
+                if (CurrentExprType != "int" && CurrentExprType != "float") {
+                    errorOnNode(Node.getValue(), "Array elements must be numeric.");
+                }
+            }
+            return;
+        }
+
+        // حالت ۲: مقداردهی معمولی
         if (Node.getValue()) {
             Node.getValue()->accept(*this);
             if (CurrentExprType != "unknown" && CurrentExprType != ExpectedType) {
-                 if (!(ExpectedType == "float" && CurrentExprType == "int")) {
-                    // خطا روی مقدار سمت راست
-                    errorOnNode(Node.getValue(), "Type mismatch. Expected " + ExpectedType + ", got " + CurrentExprType);
+                if (!(ExpectedType == "float" && CurrentExprType == "int")) {
+                    error(Node, "Type mismatch in assignment to '" + Name + "'. Expected " + ExpectedType + ", got " + CurrentExprType);
                 }
             }
         }
     }
 
-    virtual void visit(BinaryOp &Node) override {
-        Node.getLeft()->accept(*this);
-        llvm::StringRef LeftType = CurrentExprType;
-        Node.getRight()->accept(*this);
-        llvm::StringRef RightType = CurrentExprType;
+    virtual void visit(CompoundStmt &Node) override {
+        llvm::StringRef Name = Node.getName();
+        if (SymbolTable.find(Name) == SymbolTable.end()) {
+            error(Node, "Variable '" + Name + "' is used but not declared.");
+            return;
+        }
+        llvm::StringRef Type = SymbolTable[Name];
 
-        BinaryOp::Operator Op = Node.getOperator();
-
-        if (Op == BinaryOp::Div || Op == BinaryOp::Mod) {
-            if (auto *Num = dynamic_cast<Final*>(Node.getRight())) {
-                if (Num->getKind() == Final::Number && Num->getValue() == "0") {
-                    // خطا دقیقاً زیر عدد 0
-                    errorOnNode(Node.getRight(), "Division by zero detected.");
-                }
+        // حالت ۱: عملیات روی آرایه
+        if (Node.getIndex()) {
+            if (Type != "array") {
+                error(Node, "Variable '" + Name + "' is not an array.");
+                return;
+            }
+            Node.getIndex()->accept(*this);
+        }
+        // حالت ۲: عملیات روی متغیر معمولی
+        else {
+            if (Type == "bool") {
+                error(Node, "Invalid compound assignment: " + Name + " is of type bool.");
+                return;
+            }
+            if (Type != "int" && Type != "float") {
+                error(Node, "Compound assignment only works on int or float.");
+                return;
             }
         }
 
-        if (LeftType != RightType) {
-             if (!((LeftType == "int" && RightType == "float") || (LeftType == "float" && RightType == "int"))) {
-                 // خطا روی کل عملیات (مکان عملگر)
-                 error(Node, "Type mismatch: " + LeftType + " vs " + RightType);
-                 CurrentExprType = "unknown";
-             } else {
-                 // int <-> float combination: result is float
-                 CurrentExprType = "float";
-             }
-        } else {
-            CurrentExprType = LeftType;
+        // بررسی مقدار سمت راست
+        Node.getValue()->accept(*this);
+        if (CurrentExprType != "int" && CurrentExprType != "float") {
+            errorOnNode(Node.getValue(), "Operand must be numeric.");
         }
+    }
+
+    virtual void visit(UnaryStmt &Node) override {
+        llvm::StringRef Name = Node.getName();
+
+        if (SymbolTable.find(Name) == SymbolTable.end()) {
+            error(Node, "Variable '" + Name + "' is used but not declared.");
+            return;
+        }
+        llvm::StringRef Type = SymbolTable[Name];
+
+        // حالت ۱: اگر روی آرایه اعمال شده (دارای ایندکس است)
+        if (Node.getIndex()) {
+            if (Type != "array") {
+                error(Node, "Variable '" + Name + "' is not an array and cannot be indexed.");
+                return;
+            }
+            Node.getIndex()->accept(*this);
+            return; // همه چیز درست است (فرض می‌کنیم عناصر آرایه عددی هستند)
+        }
+
+        // حالت ۲: اگر روی متغیر معمولی اعمال شده
+        if (Type == "bool") {
+            error(Node, "Invalid unary operator: " + Name + " is of type bool and cannot be incremented/decremented.");
+            return;
+        }
+        if (Type != "int" && Type != "float") {
+            error(Node, "Increment/Decrement only works on int or float variables.");
+            return;
+        }
+    }
+    // --- متد جدید برای دسترسی به آرایه ---
+    virtual void visit(ArrayAccess &Node) override {
+        if (SymbolTable.find(Node.getName()) == SymbolTable.end()) {
+            error(Node, "Variable '" + Node.getName() + "' is used but not declared.");
+        }
+        Node.getIndex()->accept(*this);
+        CurrentExprType = "int"; // فرض بر int بودن
+    }
+
+    virtual void visit(MatchStmt &Node) override {
+        Node.getTarget()->accept(*this);
+        for (auto &Case : Node.getCases()) {
+            Case.first->accept(*this);
+            Case.second->accept(*this);
+        }
+    }
+
+    virtual void visit(RangeExpr &Node) override {
+        if (SymbolTable.find(Node.getList()) == SymbolTable.end()) {
+            error(Node, "List '" + Node.getList() + "' not declared.");
+        }
+        SymbolTable[Node.getIterator()] = "int";
+        if (Node.getCondition()) Node.getCondition()->accept(*this);
+        Node.getTargetExpr()->accept(*this);
+        SymbolTable.erase(Node.getIterator());
+        CurrentExprType = "array";
+    }
+
+    virtual void visit(BinaryOp &Node) override {
+        Node.getLeft()->accept(*this);
+        Node.getRight()->accept(*this);
     }
 
     virtual void visit(Final &Node) override {
         if (Node.getKind() == Final::Ident) {
             if (SymbolTable.find(Node.getValue()) == SymbolTable.end()) {
-                error(Node, "Undefined variable '" + Node.getValue() + "'"); // دقیقاً زیر متغیر
+                error(Node, "Undefined variable '" + Node.getValue() + "'");
                 CurrentExprType = "unknown";
             } else {
                 CurrentExprType = SymbolTable[Node.getValue()];
@@ -135,88 +212,45 @@ public:
         }
     }
 
-    // برای کوتاهی کد بقیه توابع مثل قبل هستند
-    virtual void visit(CompoundStmt &Node) override { Node.getValue()->accept(*this); }
-    virtual void visit(UnaryStmt &Node) override {}
-    virtual void visit(MatchStmt &Node) override { for(auto &C : Node.getCases()) { if (C.first) C.first->accept(*this); if (C.second) C.second->accept(*this); } }
-    virtual void visit(RangeExpr &Node) override {}
     virtual void visit(IfStmt &Node) override {
-        if (Node.getCond()) {
-            Node.getCond()->accept(*this);
-            if (CurrentExprType != "bool") {
-                errorOnNode(Node.getCond(), "Condition in if must be boolean, got " + CurrentExprType);
-            }
-        }
-        if (Node.getThen()) Node.getThen()->accept(*this);
-        for (auto &E : Node.getElifs()) {
-            if (E.first) {
-                E.first->accept(*this);
-                if (CurrentExprType != "bool") {
-                    errorOnNode(E.first, "Condition in elif must be boolean, got " + CurrentExprType);
-                }
-            }
-            if (E.second) E.second->accept(*this);
-        }
+        Node.getCond()->accept(*this);
+        Node.getThen()->accept(*this);
         if (Node.getElse()) Node.getElse()->accept(*this);
+        for (auto &Elif : Node.getElifs()) {
+            Elif.first->accept(*this);
+            Elif.second->accept(*this);
+        }
     }
+
     virtual void visit(ForStmt &Node) override {
         if (Node.getInit()) Node.getInit()->accept(*this);
-        if (Node.getCond()) {
-            Node.getCond()->accept(*this);
-            if (CurrentExprType != "bool") {
-                errorOnNode(Node.getCond(), "Condition in for must be boolean, got " + CurrentExprType);
-            }
-        }
-        if (Node.getBody()) Node.getBody()->accept(*this);
-        if (Node.getStep()) {
-            // step is a statement; allow it but check inside
-            Node.getStep()->accept(*this);
-        }
+        if (Node.getCond()) Node.getCond()->accept(*this);
+        if (Node.getStep()) Node.getStep()->accept(*this);
+        Node.getBody()->accept(*this);
     }
 
     virtual void visit(ForEachStmt &Node) override {
-        // 1) بررسی اینکه collection به صورت شناسه باشد و موجود است
-        llvm::StringRef ColName = Node.getCollection();
-        if (!ColName.empty() && SymbolTable.find(ColName) == SymbolTable.end()) {
-            // اگر collection شناسه نبود این خط اجرا نمی‌شود (در حال حاضر collection همیشه شناسه است چون پارسر آن را به عنوان ident می‌گرفت)
-            // اما برای ایمنی:
-            errorOnNode(&Node, "Collection '" + ColName + "' is not defined.");
-            return;
+        if (SymbolTable.find(Node.getCollection()) == SymbolTable.end()) {
+            error(Node, "Collection '" + Node.getCollection() + "' not declared.");
         }
-
-        // 2) تایپ collection را چک کن
-        llvm::StringRef ColType = SymbolTable.lookup(ColName);
-        if (ColType != "array") {
-            errorOnNode(&Node, "foreach expects an array collection, but '" + ColName + "' is of type " + ColType);
-            return;
-        }
-
-        // 3) iterator را در جدول سمبل‌ها وارد کن (نوع عنصر آرایه فعلاً int)
-        llvm::StringRef IterName = Node.getIterator();
-        bool hadOld = false;
-        llvm::StringRef OldType;
-        if (SymbolTable.count(IterName)) {
-            hadOld = true;
-            OldType = SymbolTable[IterName];
-        }
-        SymbolTable[IterName] = "int"; // فرض: آرایه از اعداد int تشکیل شده
-
-        // 4) چک کردن بدنه
-        if (Node.getBody()) Node.getBody()->accept(*this);
-
-        // 5) بازگرداندن وضعیت قبلی iterator
-        if (hadOld) SymbolTable[IterName] = OldType;
-        else SymbolTable.erase(IterName);
+        SymbolTable[Node.getIterator()] = "int";
+        Node.getBody()->accept(*this);
+        SymbolTable.erase(Node.getIterator());
     }
 
-    virtual void visit(PrintStmt &Node) override { if (Node.getArg()) Node.getArg()->accept(*this); }
-    virtual void visit(ArrayLiteral &Node) override { CurrentExprType = "array"; }
+    virtual void visit(PrintStmt &Node) override {
+        Node.getArg()->accept(*this);
+    }
+
+    virtual void visit(ArrayLiteral &Node) override {
+        for (auto *E : Node.getValues()) E->accept(*this);
+        CurrentExprType = "array";
+    }
+
     virtual void visit(BuiltinCall &Node) override {
-        // برخی builtinها نوع مشخصی برمی‌گردانند؛ برای سادگی فعلی، بیشتر آن‌ها int برمی‌گردانند
-        llvm::StringRef Name(Node.getName());
-        if (Name == "to_float") CurrentExprType = "float";
-        else if (Name == "to_bool") CurrentExprType = "bool";
-        else if (Name == "length") CurrentExprType = "int";
+        for(auto *Arg : Node.getArgs()) Arg->accept(*this);
+        if (Node.getName() == "to_float") CurrentExprType = "float";
+        else if (Node.getName() == "to_bool") CurrentExprType = "bool";
         else CurrentExprType = "int";
     }
 };

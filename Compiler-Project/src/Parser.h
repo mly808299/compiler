@@ -36,30 +36,35 @@ class Parser
 
 public:
     Parser(Lexer &Lex) : Lex(Lex), HasError(false) {
-        advance(); // Load first token
+        advance();
     }
 
     bool hasError() const { return HasError; }
-    Block *parse(); // Returns the main program block
+    Block *parse();
 
 private:
     AST *parseStatement();
     Block *parseBlock();
 
-    Declaration *parseDeclaration();      // var x int = ...
-    Declaration *parseArrayDeclaration(); // array arr = ...
+    Declaration *parseDeclaration();
+    Declaration *parseArrayDeclaration();
 
-    AST *parseMathCommand(); // ADD, SUB, PLE, INC ...
+    AST *parseMathCommand();
 
     IfStmt *parseIf();
-    AST *parseLoop(); // Handles both for and foreach
-    MatchStmt *parseMatch(); // Handles match statement
+    AST *parseLoop();
+    MatchStmt *parseMatch();
     PrintStmt *parsePrint();
 
-    Expr *parseExpr();
-    Expr *parseTerm();
-    Expr *parseFactor();
-    Expr *parseFinal(); // Handles numbers, idents, calls, list comprehensions
+    // --- سلسله مراتب اولویت عملگرها (Precedence Hierarchy) ---
+    Expr *parseExpr();        // Logical OR (||) - پایین‌ترین اولویت
+    Expr *parseLogicAnd();    // Logical AND (&&)
+    Expr *parseEquality();    // Equality (==, !=)
+    Expr *parseRelational();  // Relational (<, >, <=, >=)
+    Expr *parseAdditive();    // Additive (+, -)
+    Expr *parseTerm();        // Multiplicative (*, /, %) - بالاترین اولویت ریاضی
+    Expr *parseFactor();      // پرانتز، اعداد، متغیرها
+    Expr *parseFinal();
 };
 
 #endif
