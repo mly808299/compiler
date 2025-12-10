@@ -7,7 +7,7 @@ Block *Parser::parse() {
         if (Stmt) {
             ProgramBlock->addStatement(Stmt);
         } else {
-            // Error recovery: skip until valid start of statement
+            // اگر خطایی بود، رد کن تا به دستور بعدی برسی
             if (Tok.getKind() != Token::eoi) advance();
         }
     }
@@ -43,7 +43,7 @@ AST *Parser::parseStatement() {
         case Token::KW_print: return parsePrint();
         case Token::l_brace: return parseBlock();
 
-            // Math commands
+            // دستورات ریاضی خاص (ADD, SUB, ...)
         case Token::KW_ADD: case Token::KW_SUB: case Token::KW_MUL: case Token::KW_DIV:
         case Token::KW_MOD: case Token::KW_INC: case Token::KW_DEC: case Token::KW_PLE:
         case Token::KW_MIE: case Token::KW_AND: case Token::KW_OR:
@@ -53,11 +53,21 @@ AST *Parser::parseStatement() {
             int L = Tok.getLine(), C = Tok.getCol();
             llvm::StringRef Name = Tok.getText();
             advance();
+
             Expr *Index = nullptr;
             if (consume(Token::l_square)) {
                 Index = parseExpr();
                 if (!consume(Token::r_square)) { error(); return nullptr; }
             }
+
+            // >>> [بخش جدید] مدیریت انتساب معمولی (Variable Assignment) <<<
+            if (consume(Token::assign)) {
+                Expr *Val = parseExpr();
+                consume(Token::semicolon); // پایان دستور با ;
+                return new Assignment(L, C, Name, Val, Index);
+            }
+            // -----------------------------------------------------------
+
             if (consume(Token::plus_plus)) {
                 consume(Token::semicolon);
                 return new UnaryStmt(L, C, Name, UnaryStmt::INC, Index);
@@ -69,7 +79,7 @@ AST *Parser::parseStatement() {
             error(); return nullptr;
         }
 
-            // اگر elif یا else به تنهایی (بدون if) دیده شوند، خطاست
+            // اگر elif یا else بدون if دیده شوند
         case Token::KW_elif:
         case Token::KW_else:
             llvm::errs() << "Parser Error: '" << Tok.getText() << "' without matching 'if' at line " << Tok.getLine() << "\n";
@@ -149,7 +159,7 @@ AST *Parser::parseMathCommand() {
     return new Assignment(L, C, Target, new BinaryOp(L, C, BinOp, Op1, Op2), IndexExpr);
 }
 
-// --- اصلاح شده: تابع parseIf با پشتیبانی صحیح از elif و else if ---
+// --- Parse If (Support elif & else if) ---
 IfStmt *Parser::parseIf() {
     int L = Tok.getLine(), C = Tok.getCol();
     advance(); // skip 'if'
@@ -164,9 +174,8 @@ IfStmt *Parser::parseIf() {
     Block *Else = nullptr;
 
     while (true) {
-        // حالت ۱: elif (...) { ... }
         if (Tok.is(Token::KW_elif)) {
-            advance(); // consume 'elif'
+            advance();
             if (consume(Token::l_paren)) {}
             Expr *ElifCond = parseExpr();
             if (consume(Token::r_paren)) {}
@@ -174,35 +183,25 @@ IfStmt *Parser::parseIf() {
             Elifs.push_back({ElifCond, ElifBlock});
             continue;
         }
-
-        // حالت ۲: else ...
         if (Tok.is(Token::KW_else)) {
-            advance(); // consume 'else'
-
-            // حالت ۲-الف: else if (...) { ... }
-            if (Tok.is(Token::KW_if)) {
-                advance(); // consume 'if'
+            advance();
+            if (Tok.is(Token::KW_if)) { // Support 'else if'
+                advance();
                 if (consume(Token::l_paren)) {}
                 Expr *ElifCond = parseExpr();
                 if (consume(Token::r_paren)) {}
                 Block *ElifBlock = parseBlock();
                 Elifs.push_back({ElifCond, ElifBlock});
-                continue; // ادامه بده چون شاید باز هم else if باشد
-            }
-                // حالت ۲-ب: else { ... } (پایان زنجیره)
-            else {
+                continue;
+            } else {
                 Else = parseBlock();
-                break; // تمام شد
+                break;
             }
         }
-
-        // نه elif بود نه else -> خروج
         break;
     }
-
     return new IfStmt(L, C, Cond, Then, Elifs, Else);
 }
-// -----------------------------------------------------------------
 
 MatchStmt *Parser::parseMatch() {
     int L = Tok.getLine(), C = Tok.getCol();
@@ -246,6 +245,7 @@ AST *Parser::parseLoop() {
             consume(Token::semicolon);
             Init = new Declaration(DL, DC, Name, "int", Val);
         } else {
+            // اینجا وارد parseStatement می‌شود و i=0; را پردازش می‌کند
             Init = parseStatement();
         }
         Expr *Cond = parseExpr();

@@ -12,7 +12,12 @@ namespace {
         llvm::StringRef CurrentExprType;
         llvm::StringRef SourceCode;
 
+        // کنترل استفاده از AND/OR در شرط‌ها (درخواست‌های قبلی)
         bool InRestrictedContext = false;
+
+        // --- جدید: کنترل تعریف متغیر در بدنه شرط/حلقه (TC-L03) ---
+        bool InControlFlow = false;
+        // ---------------------------------------------------------
 
         void printError(int Line, int Col, const llvm::Twine &Msg) {
             HasError = true;
@@ -48,7 +53,14 @@ namespace {
             for (auto *Stmt: Node.getStatements()) if (Stmt) Stmt->accept(*this);
         }
 
+        // --- اصلاح شده: چک کردن ممنوعیت تعریف متغیر در بدنه شرط/حلقه ---
         virtual void visit(Declaration &Node) override {
+            // قانون TC-L03: اگر داخل بدنه if/loop هستیم، تعریف متغیر ممنوع است
+            if (InControlFlow) {
+                error(Node, "Semantic Error: Variable declaration is not allowed inside control flow bodies (if, for, etc.).");
+                // ادامه می‌دهیم تا خطاهای بعدی هم پیدا شوند
+            }
+
             llvm::StringRef Name = Node.getName();
             llvm::StringRef Type = Node.getType();
 
@@ -61,13 +73,13 @@ namespace {
                 Node.getInit()->accept(*this);
                 if (CurrentExprType != "unknown" && CurrentExprType != Type) {
                     if (!(Type == "float" && CurrentExprType == "int")) {
-                        error(Node, "Type mismatch in declaration of '" + Name + "'. Expected " + Type + ", got " +
-                                    CurrentExprType);
+                        error(Node, "Type mismatch in declaration of '" + Name + "'. Expected " + Type + ", got " + CurrentExprType);
                     }
                 }
             }
             SymbolTable[Name] = Type;
         }
+        // -------------------------------------------------------------
 
         virtual void visit(Assignment &Node) override {
             llvm::StringRef Name = Node.getName();
@@ -87,8 +99,7 @@ namespace {
 
                 if (Node.getValue()) {
                     Node.getValue()->accept(*this);
-                    if (CurrentExprType != "int" && CurrentExprType != "float")
-                        errorOnNode(Node.getValue(), "Array elements must be numeric.");
+                    if (CurrentExprType != "int" && CurrentExprType != "float") errorOnNode(Node.getValue(), "Array elements must be numeric.");
                 }
                 return;
             }
@@ -97,12 +108,8 @@ namespace {
                 Node.getValue()->accept(*this);
                 if (CurrentExprType != "unknown" && CurrentExprType != ExpectedType) {
                     if (!(ExpectedType == "float" && CurrentExprType == "int")) {
-                        if (CurrentExprType == "bool")
-                            error(Node, "Type mismatch in assignment to '" + Name + "'. Expected bool, got " +
-                                        ExpectedType);
-                        else
-                            error(Node, "Type mismatch in assignment to '" + Name + "'. Expected " + ExpectedType +
-                                        ", got " + CurrentExprType);
+                        if (CurrentExprType == "bool") error(Node, "Type mismatch in assignment to '" + Name + "'. Expected bool, got " + ExpectedType);
+                        else error(Node, "Type mismatch in assignment to '" + Name + "'. Expected " + ExpectedType + ", got " + CurrentExprType);
                     }
                 }
             }
@@ -110,79 +117,56 @@ namespace {
 
         virtual void visit(CompoundStmt &Node) override {
             llvm::StringRef Name = Node.getName();
-            if (SymbolTable.find(Name) == SymbolTable.end()) {
-                error(Node, "Variable '" + Name + "' is used but not declared.");
-                return;
-            }
+            if (SymbolTable.find(Name) == SymbolTable.end()) { error(Node, "Variable '" + Name + "' is used but not declared."); return; }
             llvm::StringRef Type = SymbolTable[Name];
 
             if (Node.getIndex()) {
-                if (Type != "array") {
-                    error(Node, "Variable '" + Name + "' is not an array.");
-                    return;
-                }
+                if (Type != "array") { error(Node, "Variable '" + Name + "' is not an array."); return; }
                 Node.getIndex()->accept(*this);
             } else {
-                if (Type == "bool") {
-                    error(Node, "Invalid compound assignment: " + Name + " is of type bool.");
-                    return;
-                }
-                if (Type != "int" && Type != "float") {
-                    error(Node, "Compound assignment only works on int or float.");
-                    return;
-                }
+                if (Type == "bool") { error(Node, "Invalid compound assignment: " + Name + " is of type bool."); return; }
+                if (Type != "int" && Type != "float") { error(Node, "Compound assignment only works on int or float."); return; }
             }
 
             Node.getValue()->accept(*this);
-            if (CurrentExprType != "int" && CurrentExprType != "float")
-                errorOnNode(Node.getValue(), "Operand must be numeric.");
+            if (CurrentExprType != "int" && CurrentExprType != "float") errorOnNode(Node.getValue(), "Operand must be numeric.");
         }
 
         virtual void visit(UnaryStmt &Node) override {
             llvm::StringRef Name = Node.getName();
-            if (SymbolTable.find(Name) == SymbolTable.end()) {
-                error(Node, "Variable '" + Name + "' is used but not declared.");
-                return;
-            }
+            if (SymbolTable.find(Name) == SymbolTable.end()) { error(Node, "Variable '" + Name + "' is used but not declared."); return; }
             llvm::StringRef Type = SymbolTable[Name];
 
             if (Node.getIndex()) {
-                if (Type != "array") {
-                    error(Node, "Variable '" + Name + "' is not an array and cannot be indexed.");
-                    return;
-                }
+                if (Type != "array") { error(Node, "Variable '" + Name + "' is not an array and cannot be indexed."); return; }
                 Node.getIndex()->accept(*this);
                 return;
             }
 
-            if (Type == "bool") {
-                error(Node, "Invalid unary operator: " + Name + " is of type bool.");
-                return;
-            }
-            if (Type != "int" && Type != "float") {
-                error(Node, "Increment/Decrement only works on int or float variables.");
-                return;
-            }
+            if (Type == "bool") { error(Node, "Invalid unary operator: " + Name + " is of type bool."); return; }
+            if (Type != "int" && Type != "float") { error(Node, "Increment/Decrement only works on int or float variables."); return; }
         }
 
         virtual void visit(ArrayAccess &Node) override {
-            if (SymbolTable.find(Node.getName()) == SymbolTable.end())
-                error(Node, "Variable '" + Node.getName() + "' is used but not declared.");
+            if (SymbolTable.find(Node.getName()) == SymbolTable.end()) error(Node, "Variable '" + Node.getName() + "' is used but not declared.");
             Node.getIndex()->accept(*this);
             CurrentExprType = "int";
         }
 
         virtual void visit(MatchStmt &Node) override {
             Node.getTarget()->accept(*this);
+            // Match هم نوعی کنترل جریان است، پس بدنه کیس‌ها هم شامل قانون می‌شوند
+            bool PrevState = InControlFlow;
+            InControlFlow = true;
             for (auto &Case: Node.getCases()) {
                 Case.first->accept(*this);
                 Case.second->accept(*this);
             }
+            InControlFlow = PrevState;
         }
 
         virtual void visit(RangeExpr &Node) override {
-            if (SymbolTable.find(Node.getList()) == SymbolTable.end())
-                error(Node, "List '" + Node.getList() + "' not declared.");
+            if (SymbolTable.find(Node.getList()) == SymbolTable.end()) error(Node, "List '" + Node.getList() + "' not declared.");
             SymbolTable[Node.getIterator()] = "int";
 
             bool PrevState = InRestrictedContext;
@@ -212,28 +196,26 @@ namespace {
 
             if (Op == BinaryOp::And || Op == BinaryOp::Or) {
                 if (LeftType != "bool" || RightType != "bool") {
-                    error(Node,
-                          "Type Error: Logical operators AND/OR require 'bool' operands. Got '" + LeftType + "' and '" +
-                          RightType + "'.");
+                    error(Node, "Type Error: Logical operators AND/OR require 'bool' operands. Got '" + LeftType + "' and '" + RightType + "'.");
                     CurrentExprType = "unknown";
                     return;
                 }
                 CurrentExprType = "bool";
-            } else if (Op == BinaryOp::Eq || Op == BinaryOp::Neq || Op == BinaryOp::Lt ||
-                       Op == BinaryOp::Gt || Op == BinaryOp::Lte || Op == BinaryOp::Gte) {
+            }
+            else if (Op == BinaryOp::Eq || Op == BinaryOp::Neq || Op == BinaryOp::Lt ||
+                     Op == BinaryOp::Gt || Op == BinaryOp::Lte || Op == BinaryOp::Gte) {
                 bool isNumericLeft = (LeftType == "int" || LeftType == "float");
                 bool isNumericRight = (RightType == "int" || RightType == "float");
                 if (LeftType != RightType) {
                     if (!(isNumericLeft && isNumericRight)) {
-                        error(Node,
-                              "Type Error: Comparison between incompatible types '" + LeftType + "' and '" + RightType +
-                              "'.");
+                        error(Node, "Type Error: Comparison between incompatible types '" + LeftType + "' and '" + RightType + "'.");
                         CurrentExprType = "unknown";
                         return;
                     }
                 }
                 CurrentExprType = "bool";
-            } else {
+            }
+            else {
                 if (LeftType == "bool" || RightType == "bool") {
                     error(Node, "Type Error: Arithmetic operators do not work on 'bool'.");
                     CurrentExprType = "unknown";
@@ -249,12 +231,12 @@ namespace {
             }
 
             if (Op == BinaryOp::Div || Op == BinaryOp::Mod) {
-                if (auto *RightVal = dynamic_cast<Final *>(Node.getRight())) {
+                if (auto *RightVal = dynamic_cast<Final*>(Node.getRight())) {
                     if (RightVal->getKind() == Final::Number) {
                         if (RightVal->getValue() == "0") error(Node, "Math Error: Division by zero is undefined.");
-                    } else if (RightVal->getKind() == Final::Float) {
-                        if (std::stod(RightVal->getValue().str()) == 0.0)
-                            error(Node, "Math Error: Division by zero is undefined.");
+                    }
+                    else if (RightVal->getKind() == Final::Float) {
+                        if (std::stod(RightVal->getValue().str()) == 0.0) error(Node, "Math Error: Division by zero is undefined.");
                     }
                 }
             }
@@ -270,23 +252,15 @@ namespace {
                 }
             } else {
                 switch (Node.getKind()) {
-                    case Final::Number:
-                        CurrentExprType = "int";
-                        break;
-                    case Final::Float:
-                        CurrentExprType = "float";
-                        break;
-                    case Final::Bool:
-                        CurrentExprType = "bool";
-                        break;
-                    default:
-                        CurrentExprType = "string";
-                        break;
+                    case Final::Number: CurrentExprType = "int"; break;
+                    case Final::Float:  CurrentExprType = "float"; break;
+                    case Final::Bool:   CurrentExprType = "bool"; break;
+                    default: CurrentExprType = "string"; break;
                 }
             }
         }
 
-        // --- حذف محدودیت در IfStmt (TC-C01 OK) ---
+        // --- اصلاح شده: اعمال محدودیت تعریف متغیر در IF ---
         virtual void visit(IfStmt &Node) override {
             if (Node.getCond()) {
                 Node.getCond()->accept(*this);
@@ -295,17 +269,34 @@ namespace {
                 }
             }
 
+            // ذخیره وضعیت قبلی
+            bool PrevState = InControlFlow;
+
+            // بدنه Then (ممنوعیت فعال)
+            InControlFlow = true;
             if (Node.getThen()) Node.getThen()->accept(*this);
+
+            // بدنه Else (ممنوعیت فعال)
             if (Node.getElse()) Node.getElse()->accept(*this);
 
+            // Elifs
             for (auto &Elif: Node.getElifs()) {
+                // شرط Elif (ممنوعیت غیرفعال - چون شرط است نه بدنه)
+                InControlFlow = PrevState;
                 if (Elif.first) Elif.first->accept(*this);
+
+                // بدنه Elif (ممنوعیت فعال)
+                InControlFlow = true;
                 if (Elif.second) Elif.second->accept(*this);
             }
+
+            // بازیابی وضعیت
+            InControlFlow = PrevState;
         }
 
-        // --- حذف محدودیت در ForStmt (TC-C01 OK) ---
+        // --- اصلاح شده: اعمال محدودیت تعریف متغیر در For ---
         virtual void visit(ForStmt &Node) override {
+            // بخش هدر (init) باید آزاد باشد
             if (Node.getInit()) Node.getInit()->accept(*this);
 
             if (Node.getCond()) {
@@ -316,15 +307,27 @@ namespace {
             }
 
             if (Node.getStep()) Node.getStep()->accept(*this);
+
+            // بدنه حلقه (ممنوعیت فعال)
+            bool PrevState = InControlFlow;
+            InControlFlow = true;
             if (Node.getBody()) Node.getBody()->accept(*this);
+            InControlFlow = PrevState;
         }
 
+        // --- اصلاح شده: اعمال محدودیت تعریف متغیر در ForEach ---
         virtual void visit(ForEachStmt &Node) override {
             if (SymbolTable.find(Node.getCollection()) == SymbolTable.end()) {
                 error(Node, "Collection '" + Node.getCollection() + "' not declared.");
             }
             SymbolTable[Node.getIterator()] = "int";
-            Node.getBody()->accept(*this);
+
+            // بدنه حلقه (ممنوعیت فعال)
+            bool PrevState = InControlFlow;
+            InControlFlow = true;
+            if (Node.getBody()) Node.getBody()->accept(*this);
+            InControlFlow = PrevState;
+
             SymbolTable.erase(Node.getIterator());
         }
 
