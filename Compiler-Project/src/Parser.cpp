@@ -4,8 +4,12 @@ Block *Parser::parse() {
     Block *ProgramBlock = new Block(0, 0);
     while (Tok.getKind() != Token::eoi) {
         AST *Stmt = parseStatement();
-        if (Stmt) ProgramBlock->addStatement(Stmt);
-        else if (HasError) return nullptr;
+        if (Stmt) {
+            ProgramBlock->addStatement(Stmt);
+        } else {
+            // Error recovery: skip until valid start of statement
+            if (Tok.getKind() != Token::eoi) advance();
+        }
     }
     return ProgramBlock;
 }
@@ -15,9 +19,16 @@ Block *Parser::parseBlock() {
     if (!consume(Token::l_brace)) { error(); return nullptr; }
     Block *B = new Block(L, C);
     while (!Tok.is(Token::r_brace) && !Tok.is(Token::eoi)) {
-        B->addStatement(parseStatement());
+        AST *Stmt = parseStatement();
+        if (Stmt) B->addStatement(Stmt);
+        else advance();
     }
-    consume(Token::r_brace);
+    if (Tok.is(Token::eoi)) {
+        llvm::errs() << "Parser Error: Missing '}' at end of file\n";
+        HasError = true;
+    } else {
+        consume(Token::r_brace);
+    }
     return B;
 }
 
@@ -32,6 +43,7 @@ AST *Parser::parseStatement() {
         case Token::KW_print: return parsePrint();
         case Token::l_brace: return parseBlock();
 
+            // Math commands
         case Token::KW_ADD: case Token::KW_SUB: case Token::KW_MUL: case Token::KW_DIV:
         case Token::KW_MOD: case Token::KW_INC: case Token::KW_DEC: case Token::KW_PLE:
         case Token::KW_MIE: case Token::KW_AND: case Token::KW_OR:
@@ -41,13 +53,11 @@ AST *Parser::parseStatement() {
             int L = Tok.getLine(), C = Tok.getCol();
             llvm::StringRef Name = Tok.getText();
             advance();
-
             Expr *Index = nullptr;
             if (consume(Token::l_square)) {
                 Index = parseExpr();
                 if (!consume(Token::r_square)) { error(); return nullptr; }
             }
-
             if (consume(Token::plus_plus)) {
                 consume(Token::semicolon);
                 return new UnaryStmt(L, C, Name, UnaryStmt::INC, Index);
@@ -59,8 +69,14 @@ AST *Parser::parseStatement() {
             error(); return nullptr;
         }
 
-        default:
-            error(); return nullptr;
+            // اگر elif یا else به تنهایی (بدون if) دیده شوند، خطاست
+        case Token::KW_elif:
+        case Token::KW_else:
+            llvm::errs() << "Parser Error: '" << Tok.getText() << "' without matching 'if' at line " << Tok.getLine() << "\n";
+            HasError = true;
+            return nullptr;
+
+        default: error(); return nullptr;
     }
 }
 
@@ -70,15 +86,11 @@ Declaration *Parser::parseDeclaration() {
     if (expect(Token::ident)) return nullptr;
     llvm::StringRef Name = Tok.getText();
     advance();
-
     llvm::StringRef TypeVal;
     if (Tok.isOneOf(Token::KW_int, Token::KW_float, Token::KW_bool, Token::KW_array, Token::KW_string)) {
         TypeVal = Tok.getText();
         advance();
-    } else {
-        error(); return nullptr;
-    }
-
+    } else { error(); return nullptr; }
     Expr *Init = nullptr;
     if (consume(Token::assign)) Init = parseExpr();
     consume(Token::semicolon);
@@ -91,7 +103,6 @@ Declaration *Parser::parseArrayDeclaration() {
     if (expect(Token::ident)) return nullptr;
     llvm::StringRef Name = Tok.getText();
     advance();
-
     Expr *Init = nullptr;
     if (consume(Token::assign)) Init = parseExpr();
     if (consume(Token::semicolon)) {}
@@ -105,30 +116,25 @@ AST *Parser::parseMathCommand() {
     if (expect(Token::ident)) return nullptr;
     llvm::StringRef Target = Tok.getText();
     advance();
-
     Expr *IndexExpr = nullptr;
     if (consume(Token::l_square)) {
         IndexExpr = parseExpr();
         if (!consume(Token::r_square)) { error(); return nullptr; }
     }
-
     if (OpKind == Token::KW_INC || OpKind == Token::KW_DEC) {
         consume(Token::semicolon);
         UnaryStmt::OpType Op = (OpKind == Token::KW_INC) ? UnaryStmt::INC : UnaryStmt::DEC;
         return new UnaryStmt(L, C, Target, Op, IndexExpr);
     }
-
     if (OpKind == Token::KW_PLE || OpKind == Token::KW_MIE) {
         Expr *Val = parseExpr();
         consume(Token::semicolon);
         CompoundStmt::OpType Op = (OpKind == Token::KW_PLE) ? CompoundStmt::PLE : CompoundStmt::MIE;
         return new CompoundStmt(L, C, Target, Val, Op, IndexExpr);
     }
-
     Expr *Op1 = parseExpr();
     Expr *Op2 = parseExpr();
     consume(Token::semicolon);
-
     BinaryOp::Operator BinOp;
     switch (OpKind) {
         case Token::KW_ADD: BinOp = BinaryOp::Plus; break;
@@ -143,37 +149,66 @@ AST *Parser::parseMathCommand() {
     return new Assignment(L, C, Target, new BinaryOp(L, C, BinOp, Op1, Op2), IndexExpr);
 }
 
+// --- اصلاح شده: تابع parseIf با پشتیبانی صحیح از elif و else if ---
 IfStmt *Parser::parseIf() {
     int L = Tok.getLine(), C = Tok.getCol();
-    advance();
+    advance(); // skip 'if'
+
     if (consume(Token::l_paren)) {}
     Expr *Cond = parseExpr();
     if (consume(Token::r_paren)) {}
+
     Block *Then = parseBlock();
 
     llvm::SmallVector<std::pair<Expr*, Block*>, 4> Elifs;
-    while (Tok.getKind() == Token::KW_elif) {
-        advance();
-        if (consume(Token::l_paren)) {}
-        Expr *ElifCond = parseExpr();
-        if (consume(Token::r_paren)) {}
-        Block *ElifBlock = parseBlock();
-        Elifs.push_back({ElifCond, ElifBlock});
+    Block *Else = nullptr;
+
+    while (true) {
+        // حالت ۱: elif (...) { ... }
+        if (Tok.is(Token::KW_elif)) {
+            advance(); // consume 'elif'
+            if (consume(Token::l_paren)) {}
+            Expr *ElifCond = parseExpr();
+            if (consume(Token::r_paren)) {}
+            Block *ElifBlock = parseBlock();
+            Elifs.push_back({ElifCond, ElifBlock});
+            continue;
+        }
+
+        // حالت ۲: else ...
+        if (Tok.is(Token::KW_else)) {
+            advance(); // consume 'else'
+
+            // حالت ۲-الف: else if (...) { ... }
+            if (Tok.is(Token::KW_if)) {
+                advance(); // consume 'if'
+                if (consume(Token::l_paren)) {}
+                Expr *ElifCond = parseExpr();
+                if (consume(Token::r_paren)) {}
+                Block *ElifBlock = parseBlock();
+                Elifs.push_back({ElifCond, ElifBlock});
+                continue; // ادامه بده چون شاید باز هم else if باشد
+            }
+                // حالت ۲-ب: else { ... } (پایان زنجیره)
+            else {
+                Else = parseBlock();
+                break; // تمام شد
+            }
+        }
+
+        // نه elif بود نه else -> خروج
+        break;
     }
 
-    Block *Else = nullptr;
-    if (consume(Token::KW_else)) {
-        Else = parseBlock();
-    }
     return new IfStmt(L, C, Cond, Then, Elifs, Else);
 }
+// -----------------------------------------------------------------
 
 MatchStmt *Parser::parseMatch() {
     int L = Tok.getLine(), C = Tok.getCol();
     advance();
     Expr *Target = parseExpr();
     if (!consume(Token::l_brace)) { error(); return nullptr; }
-
     llvm::SmallVector<std::pair<Expr*, AST*>, 8> Cases;
     while (!Tok.is(Token::r_brace) && !Tok.is(Token::eoi)) {
         Expr *Pattern = nullptr;
@@ -183,13 +218,10 @@ MatchStmt *Parser::parseMatch() {
         } else {
             Pattern = parseFinal();
         }
-
         if (!consume(Token::minus) || !consume(Token::gt)) {
             llvm::errs() << "Parser Error: Expected '->' at line " << Tok.getLine() << "\n";
-            HasError = true;
-            return nullptr;
+            HasError = true; return nullptr;
         }
-
         AST *Body = parseStatement();
         Cases.push_back({Pattern, Body});
         consume(Token::comma);
@@ -216,10 +248,8 @@ AST *Parser::parseLoop() {
         } else {
             Init = parseStatement();
         }
-
         Expr *Cond = parseExpr();
         consume(Token::semicolon);
-
         AST *Step = nullptr;
         if (Tok.getKind() == Token::ident) {
             int SL = Tok.getLine(), SC = Tok.getCol();
@@ -230,7 +260,6 @@ AST *Parser::parseLoop() {
                 Index = parseExpr();
                 consume(Token::r_square);
             }
-
             if (consume(Token::plus_plus)) {
                 Step = new UnaryStmt(SL, SC, Name, UnaryStmt::INC, Index);
             }
@@ -240,7 +269,6 @@ AST *Parser::parseLoop() {
         } else {
             Step = parseStatement();
         }
-
         consume(Token::r_paren);
         Block *Body = parseBlock();
         return new ForStmt(L, C, Init, Cond, Step, Body);
@@ -266,9 +294,6 @@ PrintStmt *Parser::parsePrint() {
     return new PrintStmt(L, C, Val);
 }
 
-// --- بخش اصلاح شده اولویت عملگرها ---
-
-// سطح 1: Logical OR (||)
 Expr *Parser::parseExpr() {
     Expr *Left = parseLogicAnd();
     while (Tok.is(Token::lor)) {
@@ -280,7 +305,6 @@ Expr *Parser::parseExpr() {
     return Left;
 }
 
-// سطح 2: Logical AND (&&)
 Expr *Parser::parseLogicAnd() {
     Expr *Left = parseEquality();
     while (Tok.is(Token::land)) {
@@ -292,7 +316,6 @@ Expr *Parser::parseLogicAnd() {
     return Left;
 }
 
-// سطح 3: Equality (==, !=)
 Expr *Parser::parseEquality() {
     Expr *Left = parseRelational();
     while (Tok.isOneOf(Token::eq, Token::neq)) {
@@ -305,7 +328,6 @@ Expr *Parser::parseEquality() {
     return Left;
 }
 
-// سطح 4: Relational (<, >, <=, >=)
 Expr *Parser::parseRelational() {
     Expr *Left = parseAdditive();
     while (Tok.isOneOf(Token::lt, Token::gt, Token::lte, Token::gte)) {
@@ -315,7 +337,6 @@ Expr *Parser::parseRelational() {
         else if (Tok.is(Token::gt)) Op = BinaryOp::Gt;
         else if (Tok.is(Token::lte)) Op = BinaryOp::Lte;
         else Op = BinaryOp::Gte;
-
         advance();
         Expr *Right = parseAdditive();
         Left = new BinaryOp(L, C, Op, Left, Right);
@@ -323,7 +344,6 @@ Expr *Parser::parseRelational() {
     return Left;
 }
 
-// سطح 5: Additive (+, -)
 Expr *Parser::parseAdditive() {
     Expr *Left = parseTerm();
     while (Tok.isOneOf(Token::plus, Token::minus)) {
@@ -336,7 +356,6 @@ Expr *Parser::parseAdditive() {
     return Left;
 }
 
-// سطح 6: Multiplicative (*, /, %)
 Expr *Parser::parseTerm() {
     Expr *Left = parseFactor();
     while (Tok.isOneOf(Token::star, Token::slash, Token::mod)) {
@@ -345,7 +364,6 @@ Expr *Parser::parseTerm() {
         if (Tok.is(Token::star)) Op = BinaryOp::Mul;
         else if (Tok.is(Token::slash)) Op = BinaryOp::Div;
         else Op = BinaryOp::Mod;
-
         advance();
         Expr *Right = parseFactor();
         Left = new BinaryOp(L, C, Op, Left, Right);
@@ -365,7 +383,6 @@ Expr *Parser::parseFactor() {
 
 Expr *Parser::parseFinal() {
     int L = Tok.getLine(), C = Tok.getCol();
-
     if (consume(Token::l_paren)) {
         Expr *E = parseExpr();
         consume(Token::r_paren);
@@ -395,7 +412,6 @@ Expr *Parser::parseFinal() {
         llvm::StringRef Val = Tok.getText(); advance();
         return new Final(L, C, Final::Bool, Val);
     }
-
     if (consume(Token::l_square)) {
         Expr *FirstExpr = parseExpr();
         if (consume(Token::KW_for)) {
@@ -418,7 +434,6 @@ Expr *Parser::parseFinal() {
             return new ArrayLiteral(L, C, Values);
         }
     }
-
     if (Tok.isOneOf(Token::KW_length, Token::KW_index, Token::KW_max, Token::KW_abs, Token::KW_find, Token::KW_to_int, Token::KW_to_float, Token::KW_to_bool)) {
         std::string FuncName = Tok.getText().str();
         advance();
@@ -431,6 +446,5 @@ Expr *Parser::parseFinal() {
         consume(Token::r_paren);
         return new BuiltinCall(L, C, FuncName, Args);
     }
-
     error(); return nullptr;
 }

@@ -4,7 +4,7 @@
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Type.h"
-#include "llvm/Support/FileSystem.h" // <--- اضافه شد
+#include "llvm/Support/FileSystem.h"
 
 using namespace llvm;
 
@@ -14,7 +14,6 @@ CodeGen::CodeGen() : Builder(Context) {
     setupExit();
 }
 
-// ... (توابع setupPrintf و setupExit مثل قبل) ...
 void CodeGen::setupPrintf() {
     std::vector<Type*> Args;
     Args.push_back(Type::getInt8PtrTy(Context));
@@ -29,7 +28,6 @@ void CodeGen::setupExit() {
     ExitFunc = M->getOrInsertFunction("exit", ExitType);
 }
 
-// --- تابع جدید: نوشتن در فایل compiler.ll ---
 void CodeGen::dumpLLVMIR() {
     std::error_code EC;
     llvm::raw_fd_ostream dest("compiler.ll", EC, llvm::sys::fs::OF_None);
@@ -39,7 +37,6 @@ void CodeGen::dumpLLVMIR() {
     }
     M->print(dest, nullptr);
 }
-// -------------------------------------------
 
 void CodeGen::compile(Block *Tree) {
     FunctionType *MainType = FunctionType::get(Type::getInt32Ty(Context), false);
@@ -50,20 +47,14 @@ void CodeGen::compile(Block *Tree) {
     Tree->accept(*this);
 
     Builder.CreateRet(ConstantInt::get(Type::getInt32Ty(Context), 0));
-
-    // تغییر: به جای چاپ در ترمینال، فایل را بساز
     dumpLLVMIR();
 }
 
-// ... (بقیه فایل دقیقاً مثل کدی که خودتان فرستادید باشد، فقط توابع بالا تغییر کردند) ...
-// برای جلوگیری از طولانی شدن، بقیه کدهای visit و helper ها را از همان کدی که فرستادید کپی کنید.
-// (چون کدهای visit شما درست بود، فقط بخش compile و dumpLLVMIR مشکل داشت).
 AllocaInst *CodeGen::CreateEntryBlockAlloca(Function *TheFunction, StringRef VarName, Type *Type) {
     IRBuilder<> TmpB(&TheFunction->getEntryBlock(), TheFunction->getEntryBlock().begin());
     return TmpB.CreateAlloca(Type, nullptr, VarName);
 }
-// ... ادامه کدهای visit ...
-// حتماً مطمئن شوید که تمام توابع visit که در پیام قبلی فرستادید اینجا هستند.
+
 Value* castToType(Value* val, Type* expectedType, IRBuilder<> &Builder) {
     Type* currentType = val->getType();
     if (currentType == expectedType) return val;
@@ -73,7 +64,9 @@ Value* castToType(Value* val, Type* expectedType, IRBuilder<> &Builder) {
     if (currentType->isIntegerTy(32) && expectedType->isIntegerTy(1)) return Builder.CreateICmpNE(val, ConstantInt::get(currentType, 0), "cast_i2b");
     return val;
 }
+
 void CodeGen::visit(Block &Node) { for (auto *Stmt : Node.getStatements()) if (Stmt) Stmt->accept(*this); }
+
 void CodeGen::visit(Declaration &Node) {
     Type *Ty = Type::getInt32Ty(Context);
     if (Node.getType() == "bool") Ty = Type::getInt1Ty(Context);
@@ -90,6 +83,7 @@ void CodeGen::visit(Declaration &Node) {
         else Builder.CreateStore(Constant::getNullValue(Ty), Alloca);
     }
 }
+
 Value* CodeGen::getElemPtr(StringRef VarName, Expr *IndexExpr) {
     if (NamedValues.find(std::string(VarName)) == NamedValues.end()) return nullptr;
     AllocaInst *VarPtr = NamedValues[std::string(VarName)];
@@ -102,6 +96,7 @@ Value* CodeGen::getElemPtr(StringRef VarName, Expr *IndexExpr) {
     }
     return VarPtr;
 }
+
 void CodeGen::visit(Assignment &Node) {
     Value *Ptr = getElemPtr(Node.getName(), Node.getIndex());
     if (!Ptr) return;
@@ -116,6 +111,7 @@ void CodeGen::visit(Assignment &Node) {
         Builder.CreateStore(Val, Ptr);
     }
 }
+
 void CodeGen::visit(CompoundStmt &Node) {
     Value *Ptr = getElemPtr(Node.getName(), Node.getIndex());
     if (!Ptr) return;
@@ -127,6 +123,7 @@ void CodeGen::visit(CompoundStmt &Node) {
     else Result = Builder.CreateSub(CurVal, AddVal);
     Builder.CreateStore(Result, Ptr);
 }
+
 void CodeGen::visit(UnaryStmt &Node) {
     Value *Ptr = getElemPtr(Node.getName(), Node.getIndex());
     if (!Ptr) return;
@@ -137,10 +134,12 @@ void CodeGen::visit(UnaryStmt &Node) {
     else Result = Builder.CreateSub(CurVal, One);
     Builder.CreateStore(Result, Ptr);
 }
+
 void CodeGen::visit(ArrayAccess &Node) {
     Value *Ptr = getElemPtr(Node.getName(), Node.getIndex());
     if (Ptr) V = Builder.CreateLoad(Type::getInt32Ty(Context), Ptr, "elemVal");
 }
+
 void CodeGen::visit(Final &Node) {
     if (Node.getKind() == Final::Number) V = ConstantInt::get(Type::getInt32Ty(Context), std::stoi(std::string(Node.getValue())));
     else if (Node.getKind() == Final::Float) V = ConstantFP::get(Type::getFloatTy(Context), std::stof(std::string(Node.getValue())));
@@ -154,11 +153,12 @@ void CodeGen::visit(Final &Node) {
             AllocaInst *VarPtr = NamedValues[std::string(Node.getValue())];
             V = Builder.CreateLoad(VarPtr->getAllocatedType(), VarPtr, Node.getValue());
         } else {
-             if (Node.getValue() == "_") V = ConstantInt::get(Type::getInt32Ty(Context), 0);
-             else V = UndefValue::get(Type::getInt32Ty(Context));
+            if (Node.getValue() == "_") V = ConstantInt::get(Type::getInt32Ty(Context), 0);
+            else V = UndefValue::get(Type::getInt32Ty(Context));
         }
     } else if (Node.getKind() == Final::Underscore) V = ConstantInt::get(Type::getInt32Ty(Context), 0);
 }
+
 void CodeGen::visit(BinaryOp &Node) {
     Node.getLeft()->accept(*this); Value *L = V;
     Node.getRight()->accept(*this); Value *R = V;
@@ -182,28 +182,79 @@ void CodeGen::visit(BinaryOp &Node) {
         case BinaryOp::Gte: V = isFloat ? Builder.CreateFCmpOGE(L, R) : Builder.CreateICmpSGE(L, R); break;
     }
 }
+
+// --- تابعی که ارور Linker می‌داد، حالا اضافه شده ---
+void CodeGen::visit(ArrayLiteral &Node) {
+    int Size = Node.getValues().size();
+    Type *IntType = Type::getInt32Ty(Context);
+    ArrayType *ArrType = ArrayType::get(IntType, Size + 1);
+    AllocaInst *ArrAlloca = Builder.CreateAlloca(ArrType, nullptr, "arraytmp");
+    Value *LenPtr = Builder.CreateConstInBoundsGEP2_32(ArrType, ArrAlloca, 0, 0);
+    Builder.CreateStore(ConstantInt::get(IntType, Size), LenPtr);
+    for (int i = 0; i < Size; ++i) {
+        Node.getValues()[i]->accept(*this);
+        Value *Val = castToType(V, IntType, Builder);
+        Value *ElemPtr = Builder.CreateConstInBoundsGEP2_32(ArrType, ArrAlloca, 0, i + 1);
+        Builder.CreateStore(Val, ElemPtr);
+    }
+    std::vector<Value*> Indices0 = {ConstantInt::get(IntType, 0), ConstantInt::get(IntType, 0)};
+    V = Builder.CreateInBoundsGEP(ArrType, ArrAlloca, Indices0, "arrayptr");
+}
+// -----------------------------------------------------
+
+// --- تابع IF با پشتیبانی کامل از ELIF ---
 void CodeGen::visit(IfStmt &Node) {
-    Node.getCond()->accept(*this);
-    Value *CondV = V;
-    if (CondV->getType()->isIntegerTy(32)) CondV = Builder.CreateICmpNE(CondV, ConstantInt::get(CondV->getType(), 0));
     Function *TheFunction = Builder.GetInsertBlock()->getParent();
-    BasicBlock *ThenBB = BasicBlock::Create(Context, "then", TheFunction);
-    BasicBlock *ElseBB = BasicBlock::Create(Context, "else");
-    BasicBlock *MergeBB = BasicBlock::Create(Context, "ifcont");
-    bool hasElse = Node.getElse() != nullptr;
-    Builder.CreateCondBr(CondV, ThenBB, hasElse ? ElseBB : MergeBB);
-    Builder.SetInsertPoint(ThenBB);
-    Node.getThen()->accept(*this);
-    Builder.CreateBr(MergeBB);
-    if (hasElse) {
-        TheFunction->getBasicBlockList().push_back(ElseBB);
-        Builder.SetInsertPoint(ElseBB);
+    BasicBlock *MergeBB = BasicBlock::Create(Context, "if.end");
+
+    // جمع‌آوری تمام شرط‌ها (IF و ELIF ها)
+    std::vector<std::pair<Expr*, Block*>> Conditions;
+    Conditions.push_back({Node.getCond(), Node.getThen()});
+    for(auto &E : Node.getElifs()) {
+        Conditions.push_back(E);
+    }
+
+    // حلقه تولید کد برای هر شرط
+    for (size_t i = 0; i < Conditions.size(); ++i) {
+        Conditions[i].first->accept(*this);
+        Value *CondV = V;
+        if (CondV->getType()->isIntegerTy(32))
+            CondV = Builder.CreateICmpNE(CondV, ConstantInt::get(CondV->getType(), 0));
+
+        BasicBlock *ThenBB = BasicBlock::Create(Context, "then", TheFunction);
+        BasicBlock *FalseBB = nullptr;
+
+        // اگر هنوز شرطی مانده یا else داریم، بلاک بعدی بساز
+        if (i < Conditions.size() - 1) {
+            FalseBB = BasicBlock::Create(Context, "next.elif", TheFunction);
+        } else if (Node.getElse()) {
+            FalseBB = BasicBlock::Create(Context, "else", TheFunction);
+        } else {
+            FalseBB = MergeBB; // اگر هیچی نمانده، برو پایان
+        }
+
+        Builder.CreateCondBr(CondV, ThenBB, FalseBB);
+
+        Builder.SetInsertPoint(ThenBB);
+        Conditions[i].second->accept(*this);
+        Builder.CreateBr(MergeBB);
+
+        if (FalseBB != MergeBB) {
+            Builder.SetInsertPoint(FalseBB);
+        }
+    }
+
+    // تولید کد برای ELSE
+    if (Node.getElse()) {
         Node.getElse()->accept(*this);
         Builder.CreateBr(MergeBB);
     }
+
     TheFunction->getBasicBlockList().push_back(MergeBB);
     Builder.SetInsertPoint(MergeBB);
 }
+// ----------------------------------------
+
 void CodeGen::visit(ForStmt &Node) {
     Function *TheFunction = Builder.GetInsertBlock()->getParent();
     if (Node.getInit()) Node.getInit()->accept(*this);
@@ -230,22 +281,7 @@ void CodeGen::visit(ForStmt &Node) {
     TheFunction->getBasicBlockList().push_back(EndBB);
     Builder.SetInsertPoint(EndBB);
 }
-void CodeGen::visit(ArrayLiteral &Node) {
-    int Size = Node.getValues().size();
-    Type *IntType = Type::getInt32Ty(Context);
-    ArrayType *ArrType = ArrayType::get(IntType, Size + 1);
-    AllocaInst *ArrAlloca = Builder.CreateAlloca(ArrType, nullptr, "arraytmp");
-    Value *LenPtr = Builder.CreateConstInBoundsGEP2_32(ArrType, ArrAlloca, 0, 0);
-    Builder.CreateStore(ConstantInt::get(IntType, Size), LenPtr);
-    for (int i = 0; i < Size; ++i) {
-        Node.getValues()[i]->accept(*this);
-        Value *Val = castToType(V, IntType, Builder);
-        Value *ElemPtr = Builder.CreateConstInBoundsGEP2_32(ArrType, ArrAlloca, 0, i + 1);
-        Builder.CreateStore(Val, ElemPtr);
-    }
-    std::vector<Value*> Indices0 = {ConstantInt::get(IntType, 0), ConstantInt::get(IntType, 0)};
-    V = Builder.CreateInBoundsGEP(ArrType, ArrAlloca, Indices0, "arrayptr");
-}
+
 void CodeGen::visit(ForEachStmt &Node) {
     Function *TheFunction = Builder.GetInsertBlock()->getParent();
     Type *IntType = Type::getInt32Ty(Context);
@@ -278,6 +314,7 @@ void CodeGen::visit(ForEachStmt &Node) {
     TheFunction->getBasicBlockList().push_back(EndBB);
     Builder.SetInsertPoint(EndBB);
 }
+
 void CodeGen::visit(MatchStmt &Node) {
     Node.getTarget()->accept(*this);
     Value *TargetVal = V;
@@ -305,6 +342,7 @@ void CodeGen::visit(MatchStmt &Node) {
     TheFunction->getBasicBlockList().push_back(MergeBB);
     Builder.SetInsertPoint(MergeBB);
 }
+
 void CodeGen::visit(BuiltinCall &Node) {
     if (Node.getName() == "to_int") {
         Node.getArgs()[0]->accept(*this); V = castToType(V, Type::getInt32Ty(Context), Builder);
@@ -346,10 +384,10 @@ void CodeGen::visit(BuiltinCall &Node) {
         Node.getArgs()[0]->accept(*this);
         Value *Val = V;
         if (Val->getType()->isFloatingPointTy()) {
-             Value *Zero = ConstantFP::get(Val->getType(), 0.0);
-             Value *IsNeg = Builder.CreateFCmpOLT(Val, Zero);
-             Value *NegVal = Builder.CreateFSub(Zero, Val);
-             V = Builder.CreateSelect(IsNeg, NegVal, Val);
+            Value *Zero = ConstantFP::get(Val->getType(), 0.0);
+            Value *IsNeg = Builder.CreateFCmpOLT(Val, Zero);
+            Value *NegVal = Builder.CreateFSub(Zero, Val);
+            V = Builder.CreateSelect(IsNeg, NegVal, Val);
         } else {
             Value *Zero = ConstantInt::get(Val->getType(), 0);
             Value *IsNeg = Builder.CreateICmpSLT(Val, Zero);
@@ -393,6 +431,7 @@ void CodeGen::visit(BuiltinCall &Node) {
         V = Builder.CreateLoad(IntType, MaxVar);
     }
 }
+
 void CodeGen::visit(PrintStmt &Node) {
     Node.getArg()->accept(*this);
     Value *Val = V;
@@ -408,6 +447,7 @@ void CodeGen::visit(PrintStmt &Node) {
     std::vector<Value*> ArgsV = {FormatStr, Val};
     Builder.CreateCall(PrintfFunc, ArgsV);
 }
+
 void CodeGen::visit(RangeExpr &Node) {
     Function *TheFunction = Builder.GetInsertBlock()->getParent();
     Type *IntType = Type::getInt32Ty(Context);

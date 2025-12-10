@@ -1,5 +1,5 @@
 #include "Lexer.h"
-
+#include "llvm/Support/raw_ostream.h"
 namespace charinfo
 {
     LLVM_READNONE inline bool isWhitespace(char c) {
@@ -36,6 +36,7 @@ void Lexer::next(Token &token)
 
     const char *TokenStart = BufferPtr;
 
+    // حذف کامنت‌های چند خطی /* ... */
     if (*BufferPtr == '/' && *(BufferPtr + 1) == '*') {
         BufferPtr += 2;
         while (*BufferPtr && !(*BufferPtr == '*' && *(BufferPtr + 1) == '/')) {
@@ -47,6 +48,7 @@ void Lexer::next(Token &token)
         return;
     }
 
+    // حذف کامنت‌های تک خطی // ...
     if (*BufferPtr == '/' && *(BufferPtr + 1) == '/') {
         BufferPtr += 2;
         while (*BufferPtr && *BufferPtr != '\n' && *BufferPtr != '\r') {
@@ -56,6 +58,7 @@ void Lexer::next(Token &token)
         return;
     }
 
+    // رشته‌ها (Strings)
     if (*BufferPtr == '"') {
         const char *end = BufferPtr + 1;
         while (*end && *end != '"') ++end;
@@ -65,6 +68,7 @@ void Lexer::next(Token &token)
         return;
     }
 
+    // کلمات کلیدی و شناسه‌ها
     if (charinfo::isLetter(*BufferPtr)) {
         const char *end = BufferPtr + 1;
         while (charinfo::isLetter(*end) || charinfo::isDigit(*end) || *end == '_')
@@ -118,6 +122,7 @@ void Lexer::next(Token &token)
         return;
     }
 
+    // اعداد
     if (charinfo::isDigit(*BufferPtr)) {
         const char *end = BufferPtr + 1;
         while (charinfo::isDigit(*end)) ++end;
@@ -132,12 +137,16 @@ void Lexer::next(Token &token)
         formToken(token, end, Token::number);
         return;
     }
-
-    // --- اضافه شده: ++ و -- ---
+    if (*BufferPtr == '=' && *(BufferPtr+1) == '<') {
+        llvm::errs() << "input.txt:" << CurrentLine << ":" << calculateColumn(BufferPtr)
+                     << ": error: Invalid operator '=<'. Did you mean '<='?\n";
+        token.Kind = Token::unknown;
+        BufferPtr += 2; // رد کردن دو کاراکتر غلط
+        return;
+    }
+    // عملگرهای دو کاراکتری
     if (*BufferPtr == '+' && *(BufferPtr+1) == '+') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::plus_plus); return; }
     if (*BufferPtr == '-' && *(BufferPtr+1) == '-') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::minus_minus); return; }
-    // ------------------------
-
     if (*BufferPtr == '=' && *(BufferPtr+1) == '=') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::eq); return; }
     if (*BufferPtr == '!' && *(BufferPtr+1) == '=') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::neq); return; }
     if (*BufferPtr == '>' && *(BufferPtr+1) == '=') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::gte); return; }
@@ -145,6 +154,7 @@ void Lexer::next(Token &token)
     if (*BufferPtr == '&' && *(BufferPtr+1) == '&') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::land); return; }
     if (*BufferPtr == '|' && *(BufferPtr+1) == '|') { BufferPtr=TokenStart; formToken(token, BufferPtr + 2, Token::lor); return; }
 
+    // عملگرهای تک کاراکتری
     BufferPtr = TokenStart;
     switch (*BufferPtr) {
         case '=': formToken(token, BufferPtr + 1, Token::assign); break;

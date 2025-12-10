@@ -13,12 +13,13 @@
 int AST::NodeCount = 0;
 
 static llvm::cl::opt<std::string>
-    Input(llvm::cl::Positional,
-          llvm::cl::desc("<input expression>"),
-          llvm::cl::init(""));
+        Input(llvm::cl::Positional,
+              llvm::cl::desc("<input expression>"),
+              llvm::cl::init(""));
+
+static std::chrono::high_resolution_clock::time_point ProgramStart;
 
 double getCurrentTimeMs() {
-    static auto ProgramStart = std::chrono::high_resolution_clock::now();
     auto Now = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> Elapsed = Now - ProgramStart;
     return Elapsed.count();
@@ -35,83 +36,67 @@ int main(int argc, const char **argv)
 {
     llvm::InitLLVM X(argc, argv);
     llvm::cl::ParseCommandLineOptions(argc, argv, "Simple Compiler\n");
-
-    getCurrentTimeMs(); // Start timer
+    ProgramStart = std::chrono::high_resolution_clock::now();
 
     llvm::errs() << "--------------------------------------------------\n";
     llvm::errs() << "🚀 Starting Compilation Process...\n";
     llvm::errs() << "--------------------------------------------------\n";
 
-    // 1. Lexer & Parser
+    // --- Phase 1: Lexing & Parsing ---
     double T1_Start = getCurrentTimeMs();
 
     Lexer Lex(Input);
     Parser Parser(Lex);
-    Block *Tree = Parser.parse();
+    Block *Tree = Parser.parse(); // سعی می‌کند درخت را بسازد حتی با خطا
 
     double T1_End = getCurrentTimeMs();
-
-    if (!Tree || Parser.hasError())
-    {
-        llvm::errs() << "❌ Syntax errors occurred\n";
-        return 1;
-    }
     printPhaseLog("Lexing & Parsing", T1_Start, T1_End);
 
-    // --- 2. Observability Files ---
-
-    // A. AST JSON
-    std::error_code EC;
-    llvm::raw_fd_ostream JsonFile("ast.json", EC, llvm::sys::fs::OF_None);
-    if (!EC) {
-        ASTDumper Dumper(JsonFile);
-        Dumper.dump(Tree);
-    }
-
-    // B. AST Visualization (AST.dot)
-    std::error_code EC2;
-    llvm::raw_fd_ostream DotFile("AST.dot", EC2, llvm::sys::fs::OF_None);
-    if (!EC2) {
-        GraphGenerator GraphGen(DotFile);
-        GraphGen.generateAST(Tree);
-    }
-
-    // C. Call Graph (CallGraph.dot) - بخش 3
-    std::error_code EC3;
-    llvm::raw_fd_ostream CallFile("CallGraph.dot", EC3, llvm::sys::fs::OF_None);
-    if (!EC3) {
-        GraphGenerator GraphGen(CallFile);
-        GraphGen.generateCallGraph(Tree);
-    }
-
-    // D. Control Flow Graph (CFG.dot) <--- این بخش جدید است
-    std::error_code EC4;
-    llvm::raw_fd_ostream CfgFile("CFG.dot", EC4, llvm::sys::fs::OF_None);
-    if (!EC4) {
-        GraphGenerator GraphGen(CfgFile);
-        GraphGen.generateCFG(Tree);
-    }
-    // ------------------------------
-
-    // 3. Semantic Analysis
-    double T2_Start = getCurrentTimeMs();
-    Sema Semantic;
-    if (Semantic.semantic(Tree, Input))
-    {
-        llvm::errs() << "❌ Semantic errors occurred\n";
+    // اگر درخت ساخته نشد (خطای خیلی حاد)، خروج
+    if (!Tree) {
+        llvm::errs() << "❌ Fatal Parsing Error: Could not build AST.\n";
         return 1;
     }
+
+    // --- Phase 2: Observability (همیشه انجام شود تا بتوانیم خطا را دیباگ کنیم) ---
+    std::error_code EC;
+    llvm::raw_fd_ostream JsonFile("ast.json", EC, llvm::sys::fs::OF_None);
+    if (!EC) { ASTDumper Dumper(JsonFile); Dumper.dump(Tree); }
+
+    std::error_code EC4;
+    llvm::raw_fd_ostream CfgFile("CFG.dot", EC4, llvm::sys::fs::OF_None);
+    if (!EC4) { GraphGenerator GraphGen(CfgFile); GraphGen.generateCFG(Tree); }
+
+    // --- Phase 3: Semantic Analysis ---
+    double T2_Start = getCurrentTimeMs();
+
+    Sema Semantic;
+    bool SemaHasError = Semantic.semantic(Tree, Input); // خطاها را چاپ می‌کند اما ادامه می‌دهد
+
     double T2_End = getCurrentTimeMs();
     printPhaseLog("Semantic Analysis", T2_Start, T2_End);
 
-    // 4. Code Generation
+    // --- Decision Point: Stop if ANY errors found ---
+    // اگر پارسر یا سما خطا داشتند، اینجا متوقف می‌شویم تا CodeGen اجرا نشود
+    if (Parser.hasError() || SemaHasError) {
+        llvm::errs() << "\n❌ Compilation Failed due to "
+                     << (Parser.hasError() ? "Syntax" : "")
+                     << ((Parser.hasError() && SemaHasError) ? " and " : "")
+                     << (SemaHasError ? "Semantic" : "")
+                     << " errors.\n";
+        return 1;
+    }
+
+    // --- Phase 4: Code Generation ---
     double T3_Start = getCurrentTimeMs();
+
     CodeGen CodeGenerator;
     CodeGenerator.compile(Tree);
+
     double T3_End = getCurrentTimeMs();
     printPhaseLog("Code Generation", T3_Start, T3_End);
 
-    // Final Report
+    // --- Final Report ---
     double TotalDuration = T3_End;
     llvm::errs() << "\n📊 [Advanced Tracing Report]\n";
     llvm::errs() << "--------------------------------------------------\n";
