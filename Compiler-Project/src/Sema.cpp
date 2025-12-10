@@ -7,17 +7,17 @@
 namespace {
 
     class InputCheck : public ASTVisitor {
-        llvm::StringMap<llvm::StringRef> SymbolTable; // ذخیره نوع متغیرها
-        llvm::StringMap<std::string> ValueTable;      // [NEW] ذخیره مقدار متغیرها (برای تشخیص صفر)
+        llvm::StringMap<llvm::StringRef> SymbolTable;
+        llvm::StringMap<std::string> ValueTable;
 
         bool HasError;
         llvm::StringRef CurrentExprType;
-        std::string CurrentExprValue; // [NEW] مقدار نود فعلی برای محاسبات
+        std::string CurrentExprValue;
 
         llvm::StringRef SourceCode;
 
         bool InRestrictedContext = false;
-        bool InControlFlow = false; // برای TC-L03
+        bool InControlFlow = false;
 
         void printError(int Line, int Col, const llvm::Twine &Msg) {
             HasError = true;
@@ -54,7 +54,6 @@ namespace {
         }
 
         virtual void visit(Declaration &Node) override {
-            // قانون TC-L03: ممنوعیت تعریف در بدنه
             if (InControlFlow) {
                 error(Node, "Semantic Error: Variable declaration is not allowed inside control flow bodies (if, loop).");
             }
@@ -74,14 +73,10 @@ namespace {
                         error(Node, "Type Error: Type mismatch in declaration of '" + Name + "'. Expected " + Type + ", got " + CurrentExprType);
                     }
                 }
-
-                // [NEW] ذخیره مقدار اولیه در جدول مقادیر
-                if (!CurrentExprValue.empty()) {
-                    ValueTable[Name] = CurrentExprValue;
-                }
+                if (!CurrentExprValue.empty()) ValueTable[Name] = CurrentExprValue;
             }
             SymbolTable[Name] = Type;
-            CurrentExprValue = ""; // Reset
+            CurrentExprValue = "";
         }
 
         virtual void visit(Assignment &Node) override {
@@ -115,13 +110,9 @@ namespace {
                         else error(Node, "Type Error: Type mismatch in assignment to '" + Name + "'. Expected " + ExpectedType + ", got " + CurrentExprType);
                     }
                 }
-
-                // [NEW] آپدیت مقدار متغیر در جدول
-                if (!CurrentExprValue.empty()) {
-                    ValueTable[Name] = CurrentExprValue;
-                }
+                if (!CurrentExprValue.empty()) ValueTable[Name] = CurrentExprValue;
             }
-            CurrentExprValue = ""; // Reset
+            CurrentExprValue = "";
         }
 
         virtual void visit(CompoundStmt &Node) override {
@@ -152,7 +143,6 @@ namespace {
                 Node.getIndex()->accept(*this);
                 return;
             }
-
             if (Type == "bool") { error(Node, "Semantic Error: Invalid unary operator: " + Name + " is of type bool."); return; }
             if (Type != "int" && Type != "float") { error(Node, "Semantic Error: Increment/Decrement only works on int or float variables."); return; }
             CurrentExprValue = "";
@@ -162,12 +152,11 @@ namespace {
             if (SymbolTable.find(Node.getName()) == SymbolTable.end()) error(Node, "Semantic Error: Variable '" + Node.getName() + "' is used but not declared.");
             Node.getIndex()->accept(*this);
             CurrentExprType = "int";
-            CurrentExprValue = ""; // مقدار آرایه را نمی‌توانیم در زمان کامپایل دقیق بدانیم
+            CurrentExprValue = "";
         }
 
         virtual void visit(MatchStmt &Node) override {
             Node.getTarget()->accept(*this);
-
             bool PrevState = InControlFlow;
             InControlFlow = true;
             for (auto &Case: Node.getCases()) {
@@ -207,8 +196,6 @@ namespace {
 
             Node.getRight()->accept(*this);
             std::string RightType = CurrentExprType.str();
-
-            // [NEW] دریافت مقدار سمت راست برای بررسی صفر بودن
             std::string RightVal = CurrentExprValue;
 
             if (Op == BinaryOp::And || Op == BinaryOp::Or) {
@@ -247,47 +234,36 @@ namespace {
                 else CurrentExprType = "int";
             }
 
-            // [NEW] تشخیص تقسیم بر صفر با استفاده از ValueTable
             if (Op == BinaryOp::Div || Op == BinaryOp::Mod) {
                 bool isZero = false;
                 if (RightVal == "0" || RightVal == "0.0") isZero = true;
-
                 if (isZero) {
                     std::string varName = "";
-                    // اگر سمت راست یک متغیر بود، نامش را برای پیام خطا پیدا کن
                     if (auto *F = dynamic_cast<Final*>(Node.getRight())) {
                         if (F->getKind() == Final::Ident) varName = F->getValue().str();
                     }
-
-                    if (!varName.empty()) {
-                        error(Node, "Semantic Error: Division by zero (denominator '" + varName + "' is 0)");
-                    } else {
-                        error(Node, "Semantic Error: Division by zero");
-                    }
+                    if (!varName.empty()) error(Node, "Semantic Error: Division by zero (denominator '" + varName + "' is 0)");
+                    else error(Node, "Semantic Error: Division by zero");
                 }
             }
-            CurrentExprValue = ""; // نتیجه محاسبه پیچیده را نگه نمی‌داریم
+            CurrentExprValue = "";
         }
 
         virtual void visit(Final &Node) override {
             if (Node.getKind() == Final::Ident) {
                 if (SymbolTable.find(Node.getValue()) == SymbolTable.end()) {
+                    // اگر متغیر پیدا نشد، چک کنیم شاید 'x' در find باشد که هنوز اضافه نشده
+                    // (البته این حالت نباید پیش بیاید چون قبل از ویزیت کردن شرط find، متغیر x را اضافه می‌کنیم)
                     error(Node, "Semantic Error: Undefined variable '" + Node.getValue() + "'");
                     CurrentExprType = "unknown";
                     CurrentExprValue = "";
                 } else {
                     CurrentExprType = SymbolTable[Node.getValue()];
-                    // [NEW] بازیابی مقدار از جدول مقادیر
-                    if (ValueTable.count(Node.getValue())) {
-                        CurrentExprValue = ValueTable[Node.getValue()];
-                    } else {
-                        CurrentExprValue = "";
-                    }
+                    if (ValueTable.count(Node.getValue())) CurrentExprValue = ValueTable[Node.getValue()];
+                    else CurrentExprValue = "";
                 }
             } else {
-                // [NEW] ذخیره مقدار ثابت
                 CurrentExprValue = Node.getValue().str();
-
                 switch (Node.getKind()) {
                     case Final::Number: CurrentExprType = "int"; break;
                     case Final::Float:  CurrentExprType = "float"; break;
@@ -304,12 +280,10 @@ namespace {
                     errorOnNode(Node.getCond(), "Type Error: Condition must evaluate to bool or int.");
                 }
             }
-
             bool PrevState = InControlFlow;
             InControlFlow = true;
             if (Node.getThen()) Node.getThen()->accept(*this);
             if (Node.getElse()) Node.getElse()->accept(*this);
-
             for (auto &Elif: Node.getElifs()) {
                 InControlFlow = PrevState;
                 if (Elif.first) Elif.first->accept(*this);
@@ -322,16 +296,13 @@ namespace {
 
         virtual void visit(ForStmt &Node) override {
             if (Node.getInit()) Node.getInit()->accept(*this);
-
             if (Node.getCond()) {
                 Node.getCond()->accept(*this);
                 if (CurrentExprType != "bool" && CurrentExprType != "int" && CurrentExprType != "unknown") {
                     errorOnNode(Node.getCond(), "Type Error: Loop condition must be bool or int.");
                 }
             }
-
             if (Node.getStep()) Node.getStep()->accept(*this);
-
             bool PrevState = InControlFlow;
             InControlFlow = true;
             if (Node.getBody()) Node.getBody()->accept(*this);
@@ -344,12 +315,10 @@ namespace {
                 error(Node, "Semantic Error: Collection '" + Node.getCollection() + "' not declared.");
             }
             SymbolTable[Node.getIterator()] = "int";
-
             bool PrevState = InControlFlow;
             InControlFlow = true;
             if (Node.getBody()) Node.getBody()->accept(*this);
             InControlFlow = PrevState;
-
             SymbolTable.erase(Node.getIterator());
             CurrentExprValue = "";
         }
@@ -366,6 +335,87 @@ namespace {
         }
 
         virtual void visit(BuiltinCall &Node) override {
+            // >>> مدیریت ویژه برای find <<<
+            // >>> مدیریت ویژه برای find <<<
+            if (Node.getName() == "find") {
+                if (Node.getArgs().size() != 2) {
+                    error(Node, "Semantic Error: 'find' requires 2 arguments.");
+                    return;
+                }
+
+                Node.getArgs()[0]->accept(*this);
+                if (CurrentExprType != "array") {
+                    errorOnNode(Node.getArgs()[0], "Semantic Error: First argument of 'find' must be an array.");
+                }
+
+                // تابع کمکی ۱: بررسی وجود x
+                std::function<bool(AST*)> containsX = [&](AST *N) -> bool {
+                    if (!N) return false;
+                    if (auto *B = dynamic_cast<BinaryOp*>(N))
+                        return containsX(B->getLeft()) || containsX(B->getRight());
+                    if (auto *F = dynamic_cast<Final*>(N))
+                        return (F->getKind() == Final::Ident && F->getValue() == "x");
+                    return false;
+                };
+
+                // تابع کمکی ۲: پیدا کردن متغیر مزاحم (مثلا x2) برای اشاره دقیق خطا
+                std::function<AST*(AST*)> findBadIdent = [&](AST *N) -> AST* {
+                    if (!N) return nullptr;
+                    if (auto *B = dynamic_cast<BinaryOp*>(N)) {
+                        AST* LeftBad = findBadIdent(B->getLeft());
+                        if (LeftBad) return LeftBad;
+                        return findBadIdent(B->getRight());
+                    }
+                    // اگر متغیری دیدیم که x نیست، همان را برگردان
+                    if (auto *F = dynamic_cast<Final*>(N)) {
+                        if (F->getKind() == Final::Ident && F->getValue() != "x") return N;
+                    }
+                    return nullptr;
+                };
+
+                // اگر x در شرط نبود
+                if (!containsX(Node.getArgs()[1])) {
+                    // بگرد ببین چه چیزی به جای x نوشته شده
+                    AST* BadNode = findBadIdent(Node.getArgs()[1]);
+
+                    if (BadNode) {
+                        // اگر متغیر غلط (مثل x2) پیدا شد، خطا را دقیقا روی آن بده
+                        errorOnNode(BadNode, "Semantic Error: The condition in 'find' MUST use the implicit variable 'x'. Did you mean 'x'?");
+                    } else {
+                        // اگر کلا متغیری نبود (مثلا 5 > 2)، خطا را روی کل شرط بده
+                        errorOnNode(Node.getArgs()[1], "Semantic Error: The condition in 'find' MUST use the implicit variable 'x'.");
+                    }
+
+                    // [نکته مهم] تایپ را int تنظیم می‌کنیم تا خطای دوم (Type mismatch) حذف شود
+                    CurrentExprType = "int";
+                    CurrentExprValue = "";
+                    return;
+                }
+                // -----------------------------------------------------------
+
+                // 1. اضافه کردن موقت x به جدول نمادها
+                bool Shadowing = SymbolTable.count("x");
+                llvm::StringRef OldType = Shadowing ? SymbolTable["x"] : "";
+
+                SymbolTable["x"] = "int";
+
+                // 2. بررسی شرط
+                Node.getArgs()[1]->accept(*this);
+                if (CurrentExprType != "bool" && CurrentExprType != "int" && CurrentExprType != "unknown") {
+                    errorOnNode(Node.getArgs()[1], "Type Error: Condition in 'find' must evaluate to bool or int.");
+                }
+
+                // 3. پاک کردن x
+                if (Shadowing) SymbolTable["x"] = OldType;
+                else SymbolTable.erase("x");
+
+                CurrentExprType = "int";
+                CurrentExprValue = "";
+                return;
+            }
+            // >>> پایان مدیریت find <<<
+            // >>> پایان مدیریت find <<<
+
             for (auto *Arg: Node.getArgs()) {
                 if (Arg) Arg->accept(*this);
             }

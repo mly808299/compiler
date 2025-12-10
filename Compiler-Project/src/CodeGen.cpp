@@ -383,77 +383,82 @@ void CodeGen::visit(BuiltinCall &Node) {
     }
         // >>>>>>>>>>>> بخش جدید: پیاده‌سازی find <<<<<<<<<<<<
     else if (Node.getName() == "find") {
-        // 1. دریافت پوینتر آرایه
         Node.getArgs()[0]->accept(*this);
         Value *ArrPtr = V;
-
-        // 2. آماده‌سازی متغیر نتیجه (پیش‌فرض -1 برای یافت نشدن)
         Function *TheFunction = Builder.GetInsertBlock()->getParent();
+
+        // 1. متغیر نتیجه (پیش‌فرض -1 برای وقتی که پیدا نشود)
         AllocaInst *ResultVar = CreateEntryBlockAlloca(TheFunction, "find_res", Type::getInt32Ty(Context));
         Builder.CreateStore(ConstantInt::get(Type::getInt32Ty(Context), -1), ResultVar);
 
-        // 3. شمارنده حلقه
+        // 2. ساخت متغیر ضمنی 'x' در حافظه
+        AllocaInst *XVar = CreateEntryBlockAlloca(TheFunction, "x", Type::getInt32Ty(Context));
+
+        // ذخیره وضعیت قبلی x (اگر متغیری به نام x بیرون تعریف شده باشد)
+        AllocaInst *OldX = nullptr;
+        if (NamedValues.count("x")) OldX = NamedValues["x"];
+        NamedValues["x"] = XVar; // حالا 'x' در شرط به این حافظه اشاره می‌کند
+
+        // 3. ایندکس حلقه
         AllocaInst *IdxVar = CreateEntryBlockAlloca(TheFunction, "find_idx", Type::getInt32Ty(Context));
         Builder.CreateStore(ConstantInt::get(Type::getInt32Ty(Context), 0), IdxVar);
-
-        // طول آرایه
         Value *Len = Builder.CreateLoad(Type::getInt32Ty(Context), ArrPtr, "len");
 
-        // 4. تعریف بلاک‌ها
+        // 4. بلاک‌های کنترلی
         BasicBlock *CondBB = BasicBlock::Create(Context, "find.cond", TheFunction);
         BasicBlock *BodyBB = BasicBlock::Create(Context, "find.body");
         BasicBlock *IncBB  = BasicBlock::Create(Context, "find.inc");
-        BasicBlock *FoundBB = BasicBlock::Create(Context, "find.found"); // بلاک موفقیت
+        BasicBlock *FoundBB = BasicBlock::Create(Context, "find.found");
         BasicBlock *EndBB  = BasicBlock::Create(Context, "find.end");
 
         Builder.CreateBr(CondBB);
 
-        // --- Condition Block ---
+        // --- شرط حلقه ---
         Builder.SetInsertPoint(CondBB);
         Value *CurIdx = Builder.CreateLoad(Type::getInt32Ty(Context), IdxVar);
         Value *LoopCond = Builder.CreateICmpSLT(CurIdx, Len);
         Builder.CreateCondBr(LoopCond, BodyBB, EndBB);
 
-        // --- Body Block ---
+        // --- بدنه حلقه ---
         TheFunction->getBasicBlockList().push_back(BodyBB);
         Builder.SetInsertPoint(BodyBB);
 
-        // ارزیابی شرط (آرگومان دوم find)
-        Node.getArgs()[1]->accept(*this);
-        Value *PredVal = V;
-
-        // تبدیل به bool اگر لازم است
-        if (PredVal->getType()->isIntegerTy(32))
-            PredVal = Builder.CreateICmpNE(PredVal, ConstantInt::get(PredVal->getType(), 0));
-
-        // اگر شرط برقرار بود برو به Found، وگرنه برو به Increment
-        Builder.CreateCondBr(PredVal, FoundBB, IncBB);
-
-        // --- Found Block ---
-        TheFunction->getBasicBlockList().push_back(FoundBB);
-        Builder.SetInsertPoint(FoundBB);
-
-        // دریافت مقدار المنت فعلی و ذخیره در ResultVar
+        // **مهم**: دریافت مقدار فعلی آرایه و ریختن داخل متغیر x
         Value *RealIdx = Builder.CreateAdd(CurIdx, ConstantInt::get(Type::getInt32Ty(Context), 1));
         Value *ElemPtr = Builder.CreateGEP(Type::getInt32Ty(Context), ArrPtr, RealIdx);
         Value *ElemVal = Builder.CreateLoad(Type::getInt32Ty(Context), ElemPtr);
+        Builder.CreateStore(ElemVal, XVar);
 
-        Builder.CreateStore(ElemVal, ResultVar);
-        Builder.CreateBr(EndBB); // شکستن حلقه (Break)
+        // حالا شرط (مثل x > 20) را بررسی می‌کنیم
+        // چون x در NamedValues هست، مقدارش از خط بالا خوانده می‌شود
+        Node.getArgs()[1]->accept(*this);
+        Value *PredVal = V;
+        if (PredVal->getType()->isIntegerTy(32))
+            PredVal = Builder.CreateICmpNE(PredVal, ConstantInt::get(PredVal->getType(), 0));
 
-        // --- Increment Block ---
+        Builder.CreateCondBr(PredVal, FoundBB, IncBB);
+
+        // --- پیدا شد ---
+        TheFunction->getBasicBlockList().push_back(FoundBB);
+        Builder.SetInsertPoint(FoundBB);
+        Builder.CreateStore(ElemVal, ResultVar); // نتیجه را ذخیره کن
+        Builder.CreateBr(EndBB); // و حلقه را بشکن
+
+        // --- دور بعدی ---
         TheFunction->getBasicBlockList().push_back(IncBB);
         Builder.SetInsertPoint(IncBB);
         Value *NextIdx = Builder.CreateAdd(CurIdx, ConstantInt::get(Type::getInt32Ty(Context), 1));
         Builder.CreateStore(NextIdx, IdxVar);
         Builder.CreateBr(CondBB);
 
-        // --- End Block ---
+        // --- پایان ---
         TheFunction->getBasicBlockList().push_back(EndBB);
         Builder.SetInsertPoint(EndBB);
-
-        // برگرداندن نتیجه نهایی
         V = Builder.CreateLoad(Type::getInt32Ty(Context), ResultVar);
+
+        // بازگرداندن وضعیت قبلی x (تمیزکاری)
+        if (OldX) NamedValues["x"] = OldX;
+        else NamedValues.erase("x");
     }
         // <<<<<<<<<<<< پایان بخش جدید <<<<<<<<<<<<
     else if (Node.getName() == "abs") {
