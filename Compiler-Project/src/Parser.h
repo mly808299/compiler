@@ -11,31 +11,21 @@ class Parser
     Token Tok;
     bool HasError;
 
-    void error() {
-        llvm::errs() << "Parser Error: Unexpected token '" << Tok.getText() << "' at line " << Tok.getLine() << "\n";
-        HasError = true;
-    }
+    // اضافه شده برای دسترسی به متن اصلی کد جهت چاپ خطا
+    llvm::StringRef SourceCode;
 
-    void advance() { Lex.next(Tok); }
+    // توابع کمکی (فقط تعریف، پیاده‌سازی در Parser.cpp است)
+    void error();
+    void printError(int Line, int Col, const llvm::Twine &Msg); // اضافه شده
 
-    bool expect(Token::TokenKind Kind) {
-        if (Tok.getKind() != Kind) {
-            error();
-            return true;
-        }
-        return false;
-    }
-
-    bool consume(Token::TokenKind Kind) {
-        if (Tok.getKind() == Kind) {
-            advance();
-            return true;
-        }
-        return false;
-    }
+    void advance();
+    bool expect(Token::TokenKind Kind);
+    bool consume(Token::TokenKind Kind);
 
 public:
-    Parser(Lexer &Lex) : Lex(Lex), HasError(false) {
+    // سازنده آپدیت شده: InputCode را می‌گیرد
+    Parser(Lexer &L, llvm::StringRef InputCode)
+            : Lex(L), HasError(false), SourceCode(InputCode) {
         advance();
     }
 
@@ -57,12 +47,12 @@ private:
     PrintStmt *parsePrint();
 
     // --- سلسله مراتب اولویت عملگرها (Precedence Hierarchy) ---
-    Expr *parseExpr();        // Logical OR (||) - پایین‌ترین اولویت
+    Expr *parseExpr();        // Logical OR (||)
     Expr *parseLogicAnd();    // Logical AND (&&)
     Expr *parseEquality();    // Equality (==, !=)
     Expr *parseRelational();  // Relational (<, >, <=, >=)
     Expr *parseAdditive();    // Additive (+, -)
-    Expr *parseTerm();        // Multiplicative (*, /, %) - بالاترین اولویت ریاضی
+    Expr *parseTerm();        // Multiplicative (*, /, %)
     Expr *parseFactor();      // پرانتز، اعداد، متغیرها
     Expr *parseFinal();
 };

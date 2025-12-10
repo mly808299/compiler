@@ -1,4 +1,48 @@
 #include "Parser.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/raw_ostream.h" // <--- اضافه شده برای رفع ارور errs
+
+// --- تابع جدید و استاندارد چاپ خطا ---
+void Parser::printError(int Line, int Col, const llvm::Twine &Msg) {
+    HasError = true;
+    llvm::errs() << "input.txt:" << Line << ":" << Col << ": error: " << Msg << "\n";
+
+    // چاپ خط کد مربوطه (Snippet)
+    llvm::SmallVector<llvm::StringRef, 100> Lines;
+    SourceCode.split(Lines, '\n');
+    if (Line > 0 && Line <= Lines.size()) {
+        llvm::StringRef CodeLine = Lines[Line - 1];
+        llvm::errs() << "    " << CodeLine << "\n";
+        llvm::errs() << "    ";
+        for (int i = 1; i < Col; ++i) llvm::errs() << " ";
+        llvm::errs() << "^\n";
+    }
+    llvm::errs() << "\n";
+}
+
+void Parser::error() {
+    printError(Tok.getLine(), Tok.getCol(), "Unexpected token '" + Tok.getText() + "'");
+}
+
+void Parser::advance() {
+    Lex.next(Tok);
+}
+
+bool Parser::consume(Token::TokenKind Kind) {
+    if (Tok.getKind() == Kind) {
+        advance();
+        return true;
+    }
+    return false;
+}
+
+bool Parser::expect(Token::TokenKind Kind) {
+    if (Tok.getKind() != Kind) {
+        printError(Tok.getLine(), Tok.getCol(), "Expected token kind " + std::to_string(Kind) + ", got '" + Tok.getText() + "'");
+        return true;
+    }
+    return false;
+}
 
 Block *Parser::parse() {
     Block *ProgramBlock = new Block(0, 0);
@@ -7,7 +51,6 @@ Block *Parser::parse() {
         if (Stmt) {
             ProgramBlock->addStatement(Stmt);
         } else {
-            // اگر خطایی بود، رد کن تا به دستور بعدی برسی
             if (Tok.getKind() != Token::eoi) advance();
         }
     }
@@ -16,16 +59,20 @@ Block *Parser::parse() {
 
 Block *Parser::parseBlock() {
     int L = Tok.getLine(), C = Tok.getCol();
-    if (!consume(Token::l_brace)) { error(); return nullptr; }
+    if (!consume(Token::l_brace)) {
+        printError(L, C, "Expected '{' to start a block");
+        return nullptr;
+    }
     Block *B = new Block(L, C);
+
     while (!Tok.is(Token::r_brace) && !Tok.is(Token::eoi)) {
         AST *Stmt = parseStatement();
         if (Stmt) B->addStatement(Stmt);
         else advance();
     }
+
     if (Tok.is(Token::eoi)) {
-        llvm::errs() << "Parser Error: Missing '}' at end of file\n";
-        HasError = true;
+        printError(Tok.getLine(), Tok.getCol(), "Syntax Error: Missing '}' at end of file");
     } else {
         consume(Token::r_brace);
     }
@@ -43,7 +90,6 @@ AST *Parser::parseStatement() {
         case Token::KW_print: return parsePrint();
         case Token::l_brace: return parseBlock();
 
-            // دستورات ریاضی خاص (ADD, SUB, ...)
         case Token::KW_ADD: case Token::KW_SUB: case Token::KW_MUL: case Token::KW_DIV:
         case Token::KW_MOD: case Token::KW_INC: case Token::KW_DEC: case Token::KW_PLE:
         case Token::KW_MIE: case Token::KW_AND: case Token::KW_OR:
@@ -57,16 +103,18 @@ AST *Parser::parseStatement() {
             Expr *Index = nullptr;
             if (consume(Token::l_square)) {
                 Index = parseExpr();
-                if (!consume(Token::r_square)) { error(); return nullptr; }
+                if (!consume(Token::r_square)) {
+                    printError(Tok.getLine(), Tok.getCol(), "Expected ']' after array index");
+                    return nullptr;
+                }
             }
 
-            // >>> [بخش جدید] مدیریت انتساب معمولی (Variable Assignment) <<<
+            // مدیریت انتساب معمولی (مثال: i = 0;)
             if (consume(Token::assign)) {
                 Expr *Val = parseExpr();
-                consume(Token::semicolon); // پایان دستور با ;
+                consume(Token::semicolon);
                 return new Assignment(L, C, Name, Val, Index);
             }
-            // -----------------------------------------------------------
 
             if (consume(Token::plus_plus)) {
                 consume(Token::semicolon);
@@ -76,17 +124,18 @@ AST *Parser::parseStatement() {
                 consume(Token::semicolon);
                 return new UnaryStmt(L, C, Name, UnaryStmt::DEC, Index);
             }
-            error(); return nullptr;
+            printError(L, C, "Unexpected identifier usage");
+            return nullptr;
         }
 
-            // اگر elif یا else بدون if دیده شوند
         case Token::KW_elif:
         case Token::KW_else:
-            llvm::errs() << "Parser Error: '" << Tok.getText() << "' without matching 'if' at line " << Tok.getLine() << "\n";
-            HasError = true;
+            printError(Tok.getLine(), Tok.getCol(), "Syntax Error: '" + Tok.getText() + "' without matching 'if'");
             return nullptr;
 
-        default: error(); return nullptr;
+        default:
+            error();
+            return nullptr;
     }
 }
 
@@ -96,11 +145,16 @@ Declaration *Parser::parseDeclaration() {
     if (expect(Token::ident)) return nullptr;
     llvm::StringRef Name = Tok.getText();
     advance();
+
     llvm::StringRef TypeVal;
     if (Tok.isOneOf(Token::KW_int, Token::KW_float, Token::KW_bool, Token::KW_array, Token::KW_string)) {
         TypeVal = Tok.getText();
         advance();
-    } else { error(); return nullptr; }
+    } else {
+        printError(Tok.getLine(), Tok.getCol(), "Expected type in declaration");
+        return nullptr;
+    }
+
     Expr *Init = nullptr;
     if (consume(Token::assign)) Init = parseExpr();
     consume(Token::semicolon);
@@ -113,6 +167,7 @@ Declaration *Parser::parseArrayDeclaration() {
     if (expect(Token::ident)) return nullptr;
     llvm::StringRef Name = Tok.getText();
     advance();
+
     Expr *Init = nullptr;
     if (consume(Token::assign)) Init = parseExpr();
     if (consume(Token::semicolon)) {}
@@ -126,25 +181,30 @@ AST *Parser::parseMathCommand() {
     if (expect(Token::ident)) return nullptr;
     llvm::StringRef Target = Tok.getText();
     advance();
+
     Expr *IndexExpr = nullptr;
     if (consume(Token::l_square)) {
         IndexExpr = parseExpr();
-        if (!consume(Token::r_square)) { error(); return nullptr; }
+        if (!consume(Token::r_square)) { printError(Tok.getLine(), Tok.getCol(), "Expected ']'"); return nullptr; }
     }
+
     if (OpKind == Token::KW_INC || OpKind == Token::KW_DEC) {
         consume(Token::semicolon);
         UnaryStmt::OpType Op = (OpKind == Token::KW_INC) ? UnaryStmt::INC : UnaryStmt::DEC;
         return new UnaryStmt(L, C, Target, Op, IndexExpr);
     }
+
     if (OpKind == Token::KW_PLE || OpKind == Token::KW_MIE) {
         Expr *Val = parseExpr();
         consume(Token::semicolon);
         CompoundStmt::OpType Op = (OpKind == Token::KW_PLE) ? CompoundStmt::PLE : CompoundStmt::MIE;
         return new CompoundStmt(L, C, Target, Val, Op, IndexExpr);
     }
+
     Expr *Op1 = parseExpr();
     Expr *Op2 = parseExpr();
     consume(Token::semicolon);
+
     BinaryOp::Operator BinOp;
     switch (OpKind) {
         case Token::KW_ADD: BinOp = BinaryOp::Plus; break;
@@ -159,15 +219,12 @@ AST *Parser::parseMathCommand() {
     return new Assignment(L, C, Target, new BinaryOp(L, C, BinOp, Op1, Op2), IndexExpr);
 }
 
-// --- Parse If (Support elif & else if) ---
 IfStmt *Parser::parseIf() {
     int L = Tok.getLine(), C = Tok.getCol();
-    advance(); // skip 'if'
-
+    advance();
     if (consume(Token::l_paren)) {}
     Expr *Cond = parseExpr();
     if (consume(Token::r_paren)) {}
-
     Block *Then = parseBlock();
 
     llvm::SmallVector<std::pair<Expr*, Block*>, 4> Elifs;
@@ -185,7 +242,7 @@ IfStmt *Parser::parseIf() {
         }
         if (Tok.is(Token::KW_else)) {
             advance();
-            if (Tok.is(Token::KW_if)) { // Support 'else if'
+            if (Tok.is(Token::KW_if)) {
                 advance();
                 if (consume(Token::l_paren)) {}
                 Expr *ElifCond = parseExpr();
@@ -207,7 +264,8 @@ MatchStmt *Parser::parseMatch() {
     int L = Tok.getLine(), C = Tok.getCol();
     advance();
     Expr *Target = parseExpr();
-    if (!consume(Token::l_brace)) { error(); return nullptr; }
+    if (!consume(Token::l_brace)) { printError(L, C, "Expected '{' in match"); return nullptr; }
+
     llvm::SmallVector<std::pair<Expr*, AST*>, 8> Cases;
     while (!Tok.is(Token::r_brace) && !Tok.is(Token::eoi)) {
         Expr *Pattern = nullptr;
@@ -217,10 +275,12 @@ MatchStmt *Parser::parseMatch() {
         } else {
             Pattern = parseFinal();
         }
+
         if (!consume(Token::minus) || !consume(Token::gt)) {
-            llvm::errs() << "Parser Error: Expected '->' at line " << Tok.getLine() << "\n";
-            HasError = true; return nullptr;
+            printError(Tok.getLine(), Tok.getCol(), "Expected '->'");
+            return nullptr;
         }
+
         AST *Body = parseStatement();
         Cases.push_back({Pattern, Body});
         consume(Token::comma);
@@ -245,11 +305,12 @@ AST *Parser::parseLoop() {
             consume(Token::semicolon);
             Init = new Declaration(DL, DC, Name, "int", Val);
         } else {
-            // اینجا وارد parseStatement می‌شود و i=0; را پردازش می‌کند
             Init = parseStatement();
         }
+
         Expr *Cond = parseExpr();
         consume(Token::semicolon);
+
         AST *Step = nullptr;
         if (Tok.getKind() == Token::ident) {
             int SL = Tok.getLine(), SC = Tok.getCol();
@@ -269,6 +330,7 @@ AST *Parser::parseLoop() {
         } else {
             Step = parseStatement();
         }
+
         consume(Token::r_paren);
         Block *Body = parseBlock();
         return new ForStmt(L, C, Init, Cond, Step, Body);
@@ -383,6 +445,7 @@ Expr *Parser::parseFactor() {
 
 Expr *Parser::parseFinal() {
     int L = Tok.getLine(), C = Tok.getCol();
+
     if (consume(Token::l_paren)) {
         Expr *E = parseExpr();
         consume(Token::r_paren);
@@ -399,7 +462,7 @@ Expr *Parser::parseFinal() {
         advance();
         if (consume(Token::l_square)) {
             Expr *Idx = parseExpr();
-            if (!consume(Token::r_square)) { error(); return nullptr; }
+            if (!consume(Token::r_square)) { printError(L, C, "Expected ']'"); return nullptr; }
             return new ArrayAccess(L, C, Val, Idx);
         }
         return new Final(L, C, Final::Ident, Val);
@@ -412,6 +475,7 @@ Expr *Parser::parseFinal() {
         llvm::StringRef Val = Tok.getText(); advance();
         return new Final(L, C, Final::Bool, Val);
     }
+
     if (consume(Token::l_square)) {
         Expr *FirstExpr = parseExpr();
         if (consume(Token::KW_for)) {
@@ -430,10 +494,11 @@ Expr *Parser::parseFinal() {
             llvm::SmallVector<Expr*, 8> Values;
             Values.push_back(FirstExpr);
             while (consume(Token::comma)) { Values.push_back(parseExpr()); }
-            if (!consume(Token::r_square)) { error(); return nullptr; }
+            if (!consume(Token::r_square)) { printError(L, C, "Expected ']'"); return nullptr; }
             return new ArrayLiteral(L, C, Values);
         }
     }
+
     if (Tok.isOneOf(Token::KW_length, Token::KW_index, Token::KW_max, Token::KW_abs, Token::KW_find, Token::KW_to_int, Token::KW_to_float, Token::KW_to_bool)) {
         std::string FuncName = Tok.getText().str();
         advance();
@@ -446,5 +511,7 @@ Expr *Parser::parseFinal() {
         consume(Token::r_paren);
         return new BuiltinCall(L, C, FuncName, Args);
     }
-    error(); return nullptr;
+
+    printError(Tok.getLine(), Tok.getCol(), "Unexpected token '" + Tok.getText() + "'");
+    return nullptr;
 }

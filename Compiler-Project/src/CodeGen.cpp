@@ -353,6 +353,7 @@ void CodeGen::visit(BuiltinCall &Node) {
     } else if (Node.getName() == "length") {
         Node.getArgs()[0]->accept(*this); V = Builder.CreateLoad(Type::getInt32Ty(Context), V, "len");
     } else if (Node.getName() == "index") {
+        // ... (کد index که قبلاً داشتید) ...
         Node.getArgs()[0]->accept(*this); Value *ArrPtr = V;
         Node.getArgs()[1]->accept(*this); Value *Idx = V;
         Value *Len = Builder.CreateLoad(Type::getInt32Ty(Context), ArrPtr, "len");
@@ -380,7 +381,83 @@ void CodeGen::visit(BuiltinCall &Node) {
         TheFunction->getBasicBlockList().push_back(MergeBB);
         Builder.SetInsertPoint(MergeBB);
     }
+        // >>>>>>>>>>>> بخش جدید: پیاده‌سازی find <<<<<<<<<<<<
+    else if (Node.getName() == "find") {
+        // 1. دریافت پوینتر آرایه
+        Node.getArgs()[0]->accept(*this);
+        Value *ArrPtr = V;
+
+        // 2. آماده‌سازی متغیر نتیجه (پیش‌فرض -1 برای یافت نشدن)
+        Function *TheFunction = Builder.GetInsertBlock()->getParent();
+        AllocaInst *ResultVar = CreateEntryBlockAlloca(TheFunction, "find_res", Type::getInt32Ty(Context));
+        Builder.CreateStore(ConstantInt::get(Type::getInt32Ty(Context), -1), ResultVar);
+
+        // 3. شمارنده حلقه
+        AllocaInst *IdxVar = CreateEntryBlockAlloca(TheFunction, "find_idx", Type::getInt32Ty(Context));
+        Builder.CreateStore(ConstantInt::get(Type::getInt32Ty(Context), 0), IdxVar);
+
+        // طول آرایه
+        Value *Len = Builder.CreateLoad(Type::getInt32Ty(Context), ArrPtr, "len");
+
+        // 4. تعریف بلاک‌ها
+        BasicBlock *CondBB = BasicBlock::Create(Context, "find.cond", TheFunction);
+        BasicBlock *BodyBB = BasicBlock::Create(Context, "find.body");
+        BasicBlock *IncBB  = BasicBlock::Create(Context, "find.inc");
+        BasicBlock *FoundBB = BasicBlock::Create(Context, "find.found"); // بلاک موفقیت
+        BasicBlock *EndBB  = BasicBlock::Create(Context, "find.end");
+
+        Builder.CreateBr(CondBB);
+
+        // --- Condition Block ---
+        Builder.SetInsertPoint(CondBB);
+        Value *CurIdx = Builder.CreateLoad(Type::getInt32Ty(Context), IdxVar);
+        Value *LoopCond = Builder.CreateICmpSLT(CurIdx, Len);
+        Builder.CreateCondBr(LoopCond, BodyBB, EndBB);
+
+        // --- Body Block ---
+        TheFunction->getBasicBlockList().push_back(BodyBB);
+        Builder.SetInsertPoint(BodyBB);
+
+        // ارزیابی شرط (آرگومان دوم find)
+        Node.getArgs()[1]->accept(*this);
+        Value *PredVal = V;
+
+        // تبدیل به bool اگر لازم است
+        if (PredVal->getType()->isIntegerTy(32))
+            PredVal = Builder.CreateICmpNE(PredVal, ConstantInt::get(PredVal->getType(), 0));
+
+        // اگر شرط برقرار بود برو به Found، وگرنه برو به Increment
+        Builder.CreateCondBr(PredVal, FoundBB, IncBB);
+
+        // --- Found Block ---
+        TheFunction->getBasicBlockList().push_back(FoundBB);
+        Builder.SetInsertPoint(FoundBB);
+
+        // دریافت مقدار المنت فعلی و ذخیره در ResultVar
+        Value *RealIdx = Builder.CreateAdd(CurIdx, ConstantInt::get(Type::getInt32Ty(Context), 1));
+        Value *ElemPtr = Builder.CreateGEP(Type::getInt32Ty(Context), ArrPtr, RealIdx);
+        Value *ElemVal = Builder.CreateLoad(Type::getInt32Ty(Context), ElemPtr);
+
+        Builder.CreateStore(ElemVal, ResultVar);
+        Builder.CreateBr(EndBB); // شکستن حلقه (Break)
+
+        // --- Increment Block ---
+        TheFunction->getBasicBlockList().push_back(IncBB);
+        Builder.SetInsertPoint(IncBB);
+        Value *NextIdx = Builder.CreateAdd(CurIdx, ConstantInt::get(Type::getInt32Ty(Context), 1));
+        Builder.CreateStore(NextIdx, IdxVar);
+        Builder.CreateBr(CondBB);
+
+        // --- End Block ---
+        TheFunction->getBasicBlockList().push_back(EndBB);
+        Builder.SetInsertPoint(EndBB);
+
+        // برگرداندن نتیجه نهایی
+        V = Builder.CreateLoad(Type::getInt32Ty(Context), ResultVar);
+    }
+        // <<<<<<<<<<<< پایان بخش جدید <<<<<<<<<<<<
     else if (Node.getName() == "abs") {
+        // ... (کد abs که داشتید) ...
         Node.getArgs()[0]->accept(*this);
         Value *Val = V;
         if (Val->getType()->isFloatingPointTy()) {
@@ -396,6 +473,7 @@ void CodeGen::visit(BuiltinCall &Node) {
         }
     }
     else if (Node.getName() == "max") {
+        // ... (کد max که داشتید) ...
         Node.getArgs()[0]->accept(*this);
         Value *ArrPtr = V;
         Type *IntType = Type::getInt32Ty(Context);

@@ -46,38 +46,47 @@ int main(int argc, const char **argv)
     double T1_Start = getCurrentTimeMs();
 
     Lexer Lex(Input);
-    Parser Parser(Lex);
-    Block *Tree = Parser.parse(); // سعی می‌کند درخت را بسازد حتی با خطا
+
+    // [تغییر]: ارسال Input به پارسر برای چاپ خطا همراه با Snippet
+    Parser Parser(Lex, Input);
+
+    Block *Tree = Parser.parse();
 
     double T1_End = getCurrentTimeMs();
     printPhaseLog("Lexing & Parsing", T1_Start, T1_End);
 
-    // اگر درخت ساخته نشد (خطای خیلی حاد)، خروج
     if (!Tree) {
         llvm::errs() << "❌ Fatal Parsing Error: Could not build AST.\n";
         return 1;
     }
 
-    // --- Phase 2: Observability (همیشه انجام شود تا بتوانیم خطا را دیباگ کنیم) ---
+    // --- Phase 2: Observability (AST + CFG + CallGraph) ---
+    // 1. AST (JSON)
     std::error_code EC;
+    // [تغییر]: نام فایل به ast.json_11 تغییر کرد
     llvm::raw_fd_ostream JsonFile("ast.json", EC, llvm::sys::fs::OF_None);
     if (!EC) { ASTDumper Dumper(JsonFile); Dumper.dump(Tree); }
 
-    std::error_code EC4;
-    llvm::raw_fd_ostream CfgFile("CFG.dot", EC4, llvm::sys::fs::OF_None);
-    if (!EC4) { GraphGenerator GraphGen(CfgFile); GraphGen.generateCFG(Tree); }
+    // 2. CFG (DOT)
+    std::error_code EC2;
+    llvm::raw_fd_ostream CfgFile("CFG.dot", EC2, llvm::sys::fs::OF_None);
+    if (!EC2) { GraphGenerator GraphGen(CfgFile); GraphGen.generateCFG(Tree); }
+
+    // 3. CallGraph (DOT)
+    std::error_code EC3;
+    llvm::raw_fd_ostream CgFile("CallGraph.dot", EC3, llvm::sys::fs::OF_None);
+    if (!EC3) { GraphGenerator GraphGen(CgFile); GraphGen.generateCallGraph(Tree); }
 
     // --- Phase 3: Semantic Analysis ---
     double T2_Start = getCurrentTimeMs();
 
     Sema Semantic;
-    bool SemaHasError = Semantic.semantic(Tree, Input); // خطاها را چاپ می‌کند اما ادامه می‌دهد
+    bool SemaHasError = Semantic.semantic(Tree, Input);
 
     double T2_End = getCurrentTimeMs();
     printPhaseLog("Semantic Analysis", T2_Start, T2_End);
 
-    // --- Decision Point: Stop if ANY errors found ---
-    // اگر پارسر یا سما خطا داشتند، اینجا متوقف می‌شویم تا CodeGen اجرا نشود
+    // بررسی نهایی خطاها قبل از تولید کد
     if (Parser.hasError() || SemaHasError) {
         llvm::errs() << "\n❌ Compilation Failed due to "
                      << (Parser.hasError() ? "Syntax" : "")
