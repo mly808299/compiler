@@ -29,8 +29,12 @@ end
 Output:
 ```
 The result is: 1
+
 The result is: 2
+
 The result is: 3
+
 The result is: 4
+
 The result is: 5
 ```
